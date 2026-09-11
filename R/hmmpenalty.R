@@ -69,31 +69,6 @@ hmmpenalty <- function(fit, data, lp, contrast) {
     }
 }
 
-        
-# The function to create tests of two rates against one another.
-# It has the exact same arguments as hmmpenalty, and 90% the same code.
-# The variance portion is similar to predict.hmm
-# gsolve and qform are stolen from the survival package
-gsolve <- function(mat, y, eps=sqrt(.Machine$double.eps)) {
-    # solve using a generalized inverse
-    # this is very similar to the ginv function of MASS
-    temp <- svd(mat, nv=0)
-    dpos <- (temp$d > max(temp$d[1]*eps, 0))
-    dd <- ifelse(dpos, 1/temp$d, 0)
-    # all the parentheses save a tiny bit of time if y is a vector
-    if (missing(y)) y <- diag(nrow(mat))
-    if (all(dpos)) x <- drop(temp$u %*% (dd*(t(temp$u) %*% y)))
-    else if (!any(dpos)) x <- drop(temp$y %*% (0*y)) # extremely rare
-    else x <-drop(temp$u[,dpos] %*%(dd[dpos] * (t(temp$u[,dpos, drop=FALSE]) %*% y)))
-    attr(x, "df") <- sum(dpos)
-    x
-}
-
-qform <- function(var, beta) { # quadratic form b' (V-inverse) b
-    temp <- gsolve(var, beta)
-    list(test= sum(beta * temp), df=attr(temp, "df"))
-}
-
 hmmcontrast <- function(fit, data, lp, contrast) {    
     if (!inherits(fit, "hmm")) 
         stop("the fit argument must be the result of an hmm call")

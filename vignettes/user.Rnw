@@ -713,9 +713,8 @@ names(lfu)[2] <- "days"
 ndata1 <- merge(base, temp2, by=c("id", "days"), all=TRUE) # other variables
 ndata1 <- merge(ndata1, lfu,   by=c("id", "days"), all=TRUE)# add futime
 
-# everyone needs a starting MC state
+# everyone needs a starting MC state, set missing to 0
 ndata1$mc[!duplicated(ndata1$id) & is.na(ndata1$mc)] <- 0
-# ndata1 is a timeline data
 # manufacture the state variable, as a factor suitable for Surv
 temp <- with(ndata1, ifelse(!is.na(mc), mc+1,
                     ifelse(!is.na(status) & status==1, 5, 0)))
@@ -727,11 +726,12 @@ survcheck(Surv2(days, state) ~1, ndata1, id=id)$ transitions
 
 # Add in the office visits. There will occassionally be labs on sequential
 #  days for the same visit, but it isn't worth removing these "duplicate" visits.
-# But do remove two tests on the same day.
+# But do ignore a second test on the same day.
 office <- subset(nafld2, days>0, c(id,days))
 office <- office[!duplicated(office),]   # tests on the same day
 ndata2 <- merge(ndata1, office, by=c("id", "days"), all=TRUE)
 ndata2$state <- lvcf(ndata2$id, ndata2$state)
+ndata2$years <- ndata2$days/365.25
 
 # The new transition table
 survcheck(Surv2(days, state, repeated=TRUE) ~1, ndata2, id=id)$transitions
@@ -895,14 +895,14 @@ nmat2[1,2] <- nmat2[2,3] <- nmat2[3,4] <- 1
 nmat2[1:4,5] <- 1
 nmat2
 
-if (FALSE) {
+if (!is.null(nfit0)) {
     # these take a long time to fit, and so are now in the data directory
+    options(mc.cores=floor(.8* parallel::detectCores())
     nfit0 <- cmsh(Surv(years, state) ~ iage, ndata3, id= id,
                   qmatrix= nmat2, init= icoef)
     nfit1 <- cmsh(list(Surv(years, state) ~ iage + male + nafld,
                    0:5 ~ male/common), 
-                  ndata3, id=id, qmatrix=nmat2, init=nfit0)
-    save(nfit0, nfit1, file= "nfit0.rda")
+                  ndata3, id=id, qmatrix=nmat2, init=nfit0, mc.cores=12)
 }
 nfit0
 nfit1
@@ -914,7 +914,7 @@ nfit2 <- coxph(list(Surv2(age, state) ~ male + nafld,
                     0:5 ~ male/common,
                     1:2 + 1:3 + 1:4 ~ male + nafld/common,
                     2:3 + 2:4 ~ male + nafld/common),
-               ndata1, id=id)
+               ndata2, id=id)
 nfit2
 
 # Hazard ratio plot
@@ -945,7 +945,7 @@ Now compare the predictions.
 <<ncurves>>=
 ndummy <- expand.grid(male=0:1, nafld=0:1)
 pcurve1 <- predict(nfit1, type='pstate', newdata=ndummy,
-                   time=list(iage=50:100), p0=c(1,0,0,0,0))
+                   time=list(age=50:100), p0=c(1,0,0,0,0))
 pcurve2 <- survfit(nfit2, newdata=ndummy, start.time=50,
                    p0=c(1,0,0,0,0))
 

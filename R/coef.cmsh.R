@@ -47,17 +47,54 @@ B.to.coef <- function(B, cmap, fixed=FALSE) {
     new
 }       
 
-print.cmsh <- function(x, digits=max(options()$digits - 4, 3), ...) {
+print.cmsh <- function(x, digits=max(1L, getOption("digits")- 3L), 
+                       signif.stars= FALSE, ...) {
      if (!is.null(cl<- x$call)) {
 	cat("Call:\n")
 	dput(cl)
 	cat("\n")
 	}
    
-     B <- coef(x, matrix=TRUE, fixed=TRUE)
-     printCoefmat(B, has.Pvalue=FALSE, digits=digits)
-     cat("\n States: ", paste(paste(seq(along.with=x$states), x$states, 
-                                    sep='= '), collapse=", "), '\n')
+     coef <- x$coefficients
+     se <- sqrt(diag(x$var))
+     tmp <- cbind(coef, exp(coef), se, coef/se,
+                  pchisq((coef/se)^2, 1, lower.tail=FALSE))
+     dimnames(tmp) <- list(names(coef), c("coef", "exp(coef)",
+                                          "se(coef)", "z", "p"))
+     # print it group by group
+     # lazy: I don't want to type x$cmap many times
+     #  remove transitions with no covariates
+     cmap <- x$cmap[, colSums(x$cmap) > 0, drop=FALSE]
+     cname <- colnames(cmap)
+     printed <- rep(FALSE, length(cname))
+     rname <- rownames(cmap)
+     extrarows <- NULL
+     for (i in 1:length(cname)) {
+         # if multiple colums of tmat are identical, only print that
+         #  set of coefficients once
+         if (!printed[i]) {
+             j <- apply(cmap, 2, function(x) all(x == cmap[,i])) 
+             printed[j] <- TRUE
+             tlab <- c(paste(cname[j], collapse=", "), "") #label for block
+             if (nchar(tlab[1]) > 20) {     
+                 k <- length(extrarows) +1L
+                 extrarows <- c(extrarows, 
+                                paste(LETTERS[k], tlab, sep=': '))
+                 tlab <- c(LETTERS[k], "") # new block label
+             }
+             tmp2 <- tmp[cmap[,i],, drop=FALSE]
+             names(dimnames(tmp2)) <- tlab
+             # restore character row names
+             rownames(tmp2) <- rname[cmap[,i]>0]
+             printCoefmat(tmp2, digits=digits, P.values=TRUE, 
+                          has.Pvalue=TRUE, signif.stars=signif.stars, ...)
+             cat("\n")   
+         }
+     }
+
+     cat(" States: ", paste(paste(seq(along.with=x$states), x$states, 
+                                  sep='= '), collapse=", "), '\n')
+     if (!is.null(extrarows)) cat(extrarows, sep='\n')
      cat("\n")
      loglik <- round(x$loglik, 2)
      if (length(loglik)==1)
@@ -70,7 +107,7 @@ print.cmsh <- function(x, digits=max(options()$digits - 4, 3), ...) {
              round(ldiff,1), "on", df, "df\n")
      }
 
-     cat(x$n[1], "observations", x$n[2], "subjects\n")
+     cat(x$n[1], "observations,", x$n[2], "subjects\n")
      if (length(x$na.action)) {
          cat("   ", length(x$na.action), "observations removed")
          temp <- paste(x$removed[x$removed>0], names(x$removed[x$removed>0]))

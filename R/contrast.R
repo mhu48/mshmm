@@ -12,9 +12,10 @@ contrast <- function(fit, data, global=FALSE, weight, transition,
             if (any(is.na(k))) stop("unrecognized transition")
         }
         if (length(k)==1) j <- cmap[,k]  else stop("not done")
+
         vmat <- vcov(fit)[j,j, drop=FALSE]
         beta <- coef(fit)[j]
-        if (any(cmap[,k]==0)) newx <- newx[, cmap[k]>0, drop=FALSE]
+        if (any(j==0)) newx <- newx[, j>0, drop=FALSE]
     }
     else {
         vmat <- vcov(fit)

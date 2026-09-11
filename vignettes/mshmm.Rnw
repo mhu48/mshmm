@@ -1,0 +1,843 @@
+\documentclass{article}
+\usepackage{amsmath}
+\title{Censored multistate hazard (MSH) models}
+\author{Terry Therneau}
+
+\addtolength{\textwidth}{1in}
+\addtolength{\oddsidemargin}{-.5in}
+\setlength{\evensidemargin}{\oddsidemargin}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\comment}[1]{{\color{blue} #1}} 
+\newcommand{\ee}{{\epsilon}4}
+
+%\VignetteIndexEntry{Using the mshmm package}
+%\VignetteEngine{knitr::knitr}
+%\VignetteEncoding{UTF-8}
+
+<<setup, echo=FALSE>>=
+library(knitr)
+library(splines)
+suppressMessages(library(mshmm))
+opts_chunk$set(tidy=FALSE, comment=NA, highlight=FALSE,
+               fig.path='figures/',fig.width=7,fig.height=5.5,
+               out.width="\\textwidth", out.height="!", device="pdf",
+               background="#FFFFFF", cache=FALSE, error=FALSE)
+
+options(continue="  ", width=60)
+pdf.options(pointsize=10) #text in graph about the same as regular text
+palette("Okabe-Ito")
+@ 
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+There are several R packages which use the hazard function as their underlying
+tool for the analysis of multistate time to event models, a class that we will
+broadly refer to as multi-state hazard models (MSH). These include for instance
+the dtms, icmstate, msm, mstate, nhm and survival packages, among others.
+This vignette is focused on the mshmm package, which is designed to deal with
+intermittently observed multistate data.  
+The primary cmsh function accomodates a
+range of range of outcomes from simple interval censored (panel) data to a full
+hidden Markov model, and hence the portamanteau name of (multi-state hazard +
+hidden Markov model) or MSHMM for the package.
+The user interface for mshmm is heavily influence by that for the multistate
+models supported by the survival package, and we often use these models as
+a contrast.
+
+\subsection{Aside: counting process and timeline data}
+The functions in the survival package that deal with multistate data
+(coxph, survcheck, survfit, survSplit) allow for two styles of data.
+For a data set in \emph{counting process} form
+\begin{itemize}
+  \item Each line has a subject id along with a time interval (t1, t2] to which
+    this observation applies, a transition (outcome) variable, and covariates.
+  \item Covariates apply over the entire interval, from start to finish,
+    likewise for stratification variables, if present.
+  \item Transitions to another state occur at the end of the interval.
+\end{itemize}
+For the newer \emph{timeline} form
+\begin{itemize}
+  \item Each line of the data has a subject id and time value pair.
+  \item Other variables on the line are information that was measured at that
+    time point.
+  \item Values that carry forward from line to line, i.e., fixed covariates
+    such as sex, may also be repeated.
+\end{itemize}
+
+A timeline data set is actually more natural in the sense that it mimics the 
+way in which data is gathered. 
+It also may be easier to create, since one can use a wider variety of R tools.
+For ordinary survival, however, a Kaplan-Meier say,
+data in timeline form requires two rows of data per subject:
+the first observation at time 0 will have baseline covariates along with a
+status of alive; a second
+observation at the time of death or last follow-up will have the status at that
+time point (alive/dead).
+This is different than the traditional way that survival data is coded,
+i.e., a single observation with a time/status variable pair.
+The counting process format for the survival package evolved out of
+simple survival
+and so retains that instance as a special case, i.e., one line per subject
+for the simple cases of alive/dead or competing risks.
+
+The data sets in the \code{mshmm} package (and the msm package as well) are
+all in timeline format, and this is the form required by the cmsh and msm
+functions.
+For survival functions we need to use
+\code{Surv2} rather than \code{Surv} as a marker to inform the routine that 
+the input data is in timeline form, for cmsh this is not necessary.
+
+<<dem1>>=
+subset(dementia, ptnum %in% 3:4, c(ptnum, age, male, educ, cmc, centiloid, dx))
+@ 
+ 
+A further observation is that a timeline dataset will have many missing 
+values, e.g., blood pressure would not normally be known on the day of death,
+especially if death date is obtained from other sources.
+One consequence is that the usual first step of other modeling functions such
+as \code{lm}, i.e., to remove any data row that contains missing values as the
+very first step, is not taken by the cmsh function.  The handling of missings
+is more nuanced.
+
+\subsection{Dementia data}
+To introduce the methods we will use a simple example based on the 
+\code{dementia} data set found in the package, this data will be
+used a running example throughout the vignette.
+This data set is a randomized data set (all variables perturbed by noise),
+itself based on a random subset of the data used in the analyses found 
+in \cite{Jack22}, and based on the Mayo Clinic Study of Aging (MCSA).
+A description of the MCSA can be found in Roberts et al \cite{Roberts08}.
+In brief, the MCSA is an age and sex stratified sample of subjects from 
+Olmsted County, Minnesota.
+After recruitment, subjects are invited to return for a study
+visit every 15 months, with the goal of understanding the evolution of
+cognitive decline, along with various markers of pathologies that may underlie
+said decline. 
+As patients leave the study there have been new waves of recruitment, with the
+goal of maintaining an active set of approximatedly 2--3 thousand subjects.
+Although the dementia data set is closely modeled on an MCSA sample,
+always remember that this is not real data. It is hoped that it will be useful
+for both illustration and research on multistate methods, but is not a 
+proper tool for clinical decision making.
+
+<<first>>=
+library(survival)
+library(mshmm)
+library(splines2, warn.conflicts= FALSE)
+options(mc.cores= floor(parallel::detectCores()*.8)) #don't use them all
+options(show.significant.stars = FALSE)  # display statistical intellegence
+table2 <- function(...) table(..., useNA= "ifany")  # show missings in tables
+@
+
+The code above starts with declarations.  
+\begin{itemize}
+  \item The mshmm library depends on survival
+  \item The splines2 library includes an updated copy of the nsk function, first
+    piloted with survival and now deprecated there (the splines2 version is
+    superior); the warn.conflicts option stops a warning that the survival
+    version has been preempted.
+  \item The mshmm code makes use of parallel processing to speed up 
+    computation, the mc.cores option attempts to set a reasonable default.
+  \item The table2 function is simply a version of table that will show missings
+    by default
+\end{itemize}
+
+<<dementia1>>=
+dxcount <- table2(dementia$dx)
+dxcount
+check1 <- survcheck(Surv2(age, dx)~1, data=dementia, id=ptnum)
+check1$transitions
+@ 
+
+The \code{dx} variable in the data set is a portamanteau of results.
+\begin{enumerate}
+  \item For an on study visit the patient is assessed as cognitively
+    unimpaired (CU), mild congitive impairment (MCI) or dementia.
+  \item Patients who have not returned in over 30 months and are not yet 
+    known to be demented are placed on a queue for review of
+    their patient history by a set of trained nurse abstracters. 
+    The reviewers are able to assess
+    demented vs. non-demented (ND) status from physician notes and diagnoses at
+    standard office visits, but since such visits do not include formal 
+    cognitive testing it is not possible to distinguish CU from MCI; 
+    the nurse abstracter reviews are coded as 
+    non-demented (ND) or off-study dementia (off-dem) in the \code{dx} 
+    variable. 
+    Unfortunately, if there are multiple such reviews only the last 
+    was retained in the study data base;
+    this leads to zeros in the 2 by 2 nondem/off-dem portion of the transitions
+    table above.
+  \item About 45\% of the subjects have a final row of information containing 
+    only a status of alive/dead.  This might be the result of an 
+    outpatient visit such as a vaccination, from patient correspondence, 
+    or electronic sources.
+    A very small number of in study visits are missing the
+    diagnosis (17), these also have a diagnosis of alive.
+\end{enumerate}
+Each row of data corresponds to exactly one of these three types of contact.
+The MCSA is a population sample, so it is not surprising that most of
+the study visits 
+(\Sexpr{paste0(dxcount[2], '/', sum(dxcount[2:4]), ' = ', round(100*dxcount[2]/sum(dxcount[2:4])))} %\), 
+have a status of cognitively unimpaired.
+
+\begin{figure}
+<<figjack1, echo=FALSE>>=
+astate <- c("not\ndemented", "dementia", "death")
+amat <- matrix(0, 3, 3, dimnames=list(astate, astate))
+amat[1,2] <- amat[1,3] <- amat[2,3] <- 1
+statefig(rbind(2,1), amat)
+@ 
+  \caption{State space for the simple dementia model.}
+  \label{figjack1}
+\end{figure}
+
+The 2022 Jack study used a simpler three state categorization shown in figure
+\ref{figjack1}, of non-demented (ND), ever dementia, and death.  
+Create a dx2 variable containing this simpler coding.
+
+<<mcsadx2>>=
+temp1 <- c(1,2,2,3,2,3,4)[as.numeric(dementia$dx)]
+temp2 <- factor(temp1, 1:4, c("alive", "ND", "dementia", "death"))
+table2(temp2, dx=dementia$dx) # check
+# Create "ever demented"
+# (There must be a less mysterious way to do this than unlist(tapply(...)
+temp3 <- unlist(tapply(temp1, dementia$ptnum, 
+                       function(x) ifelse(x==1, 1, cummax(x))))
+dementia$dx2 <- factor(temp3, 1:4, c("alive", "ND", "dementia", "death"))
+
+survcheck(Surv2(age, dx2) ~ 1, data=dementia, id= ptnum)$transitions
+@
+
+We see that the recode has been successful: the 33 dementia:MCI transtions
+have been removed.
+(Eleven subjects have ND to dementia to ND, so the total number of transitions
+to dementia also decreases).
+
+As a first look use simple Poisson regression to estimate the death and
+dementia rates over time.
+For fitting a glm model it is easier to first cast the data into
+counting process form,
+where each observation represents a time interval.
+The \code{fromtimeline} function replaces age with age1 and age2, and adds
+the istate variable.  The resultant data set will have one less line
+per subject.
+By default the counting process data set does not treat repeated visits in the
+same state as an event. 
+The fromtimeline function also applies last value carried forward (LVCF)
+logic to replace missing values.
+
+<<mcsadx3>>=
+# make counting process data
+demc <- fromtimeline(Surv2(age, dx2) ~ ., dementia, id=ptnum)
+subset(dementia, ptnum==14, c(ptnum, age, years, male, educ, cmc, dx2))
+subset(demc, ptnum==14, c(ptnum, age1, age2, years, male, educ, 
+                         cmc, istate, dx2))
+@
+
+A well known trick for fitting poisson event rates to count data is to use an
+\code{offset} statement.  We observe events, but are interested in modeling
+event rates. Let $y$ be the Poisson count and $r$ the rate. We want to restrict
+the rate to be positive, and thus
+\begin{align*}
+E(y) &= E(rt) \\
+     &= e^{X\beta}t
+     &= e^{X\beta + \log(t)}
+\end{align*}
+The observation time for each subject appears a covariate $\log(t)$ with a
+known coefficient of 1, a covariate with known coefficient is known as an
+offset.
+
+<<mcsadx4>>=
+# the width of the interval
+demc$width <- demc$age2- demc$age1
+pfit0 <- glm(I(dx2=="death") ~ age1 + male + offset(log(width)),
+             family="poisson", data=demc)
+pfit1 <- glm(I(dx2=="death") ~ ns(age1, df=4) + male + offset(log(width)),
+             family="poisson", data=demc)
+pfit2 <- glm(I(dx2=="dementia") ~ ns(age1, df=4) + male + offset(log(width)),
+             family="poisson", data=demc, 
+             subset= (demc$istate=="ND" & demc$dx2 != "death"))
+# in a final ND:death interval a subject is not at risk for *detected*
+#  dementia, so are left out of the denominator
+
+dummy <- expand.grid(age1=55:99, male=0:1, width=1000)
+yhat1 <- matrix(predict(pfit1, newdata=dummy, type='response'), ncol=2)
+yhat2 <- matrix(predict(pfit2, newdata=dummy, type='response'), ncol=2)
+matplot(55:99, cbind(yhat0, yhat1, yhat2), type='l', lwd=2, lty=c(1,1,1,1,2,2), 
+        col=1:2, log='y', ylim=c(.1, 1000), lwd=c(1,1,2,2,2,2),
+        xlab="Age", ylab="Rate per 1000")
+legend(55, 1000, c("Death, male", "Death, female", "Dementia, male", 
+                   "Dementia, female"), col=2:1, lty=c(1,1,2,2), lwd=2,
+       bty='n')
+
+# Ever death, ever dementia
+aj1 <- survfit(Surv(age1, age2, dx2) ~male, id=ptnum, istate=istate,
+               p0= c(1,0,0), start.time=60, 
+               data=demc, subset= (istate=="ND"))
+plot(aj1[,-1], col=1:2, lty=c(1,1,2,2), lwd=2, xmax=100,
+     xlab="Age", ylab="State")
+legend("topleft", c("death w/o dem, male", "death w/o dem, female", 
+                    "ever dementia, male", "ever dementia, female"),
+       col=2:1, lty=c(2,2,1,1), lwd=2, bty='n')
+@
+
+Above age 70 the hazard for death is essentially log-linear, but the
+hazard of dementia is far from log-linear. 
+Death rates for males are \code{exp(coef(pfit1)['male'])} about 1.37
+times the female rate, while there is little apparent difference
+in the sex specific dementia rate (1.05, p=.5).
+
+For the 2022 analysis the effect of amyloid level on dementia rates was a
+question of primary interest; amyloid levels were categorized as 
+low/moderate/high/missing.  The presence of one or more $\ee$ alleles
+in the APOE gene, along with male sex, CMC score and possibly education 
+were also known to have an effet on dementia and/or death rates.  
+Amyloid level is measured via positron emission tomography (PET) using
+carbon-11 labeled Pittsburgh compound B (PiB) as the tracer, with resulting
+levels recorded in centiloid units.
+Amyloid is time-dependent, use last value carried forward (LVCF) to replace
+any missing values before creating the missing category.
+
+<<ifit>>=
+ddata <- dementia  # work on a local copy
+temp1 <- with(ddata, lvcf(ptnum, centiloid))
+temp2 <- ifelse(is.na(temp1), 0,
+                as.numeric(cut(temp1, c(-100, 22, 68, 400))))
+ddata$agrp <- factor(temp2, c(1:3, 0), c("low", "moderate", "high", "missing"))
+ddata$edu4 <- pmax(8, dementia$educ)/4
+
+# Fit a transition based MSH model
+dfit0 <- coxph(list(Surv2(age, dx2) ~ male + any.e4 + agrp + edu4 + cmc,
+                    1:2 ~ male*(any.e4 + agrp)),
+               data= ddata, id= ptnum)
+
+# Now fit an 'observed state' MSH model
+states <- c("ND", "dementia", "death")
+qmat <- matrix(0, 3, 3, dimnames=list(from=states, to=states))
+qmat[1,2] <- qmat[1,3] <- qmat[2,3] <- 1
+qmat
+
+options(mc.cores = floor(.8* parallel::detectCores()))
+
+# initial coefficients based on a fit of the Minnesota rates
+# (all the time intervals are 1 year, so no offset is needed)
+tdata <- data.frame(age= 50:95,
+                    rate= 365.25 *survexp.mn[51:96, 1, "2010"])
+gfit <- glm(rate ~ age, quasipoisson, data=tdata)
+icoef <- cbind(coef(gfit), coef(gfit), coef(gfit))
+
+dfit1a <- cmsh(Surv(age, dx2) ~ age, data=ddata, id=ptnum, 
+               qmatrix=qmat, init = icoef)
+dfit1 <- cmsh(list(Surv(age, dx2) ~ age+ male + any.e4 + agrp + edu4 + cmc,
+                    1:2 ~ male*(any.e4 + agrp)),
+               data= ddata, id= ptnum, qmatrix= qmat, init=dfit1a)
+
+c(coxph = diff(dfit0$loglik), cmsh= diff(dfit1$loglik))
+@
+
+Calling sequences for the two methods are similar (on purpose). There are
+5 variables that affect the event rate, with two further interaction
+terms for the ND:dementia transition. The primary changes at this point
+are:
+\begin{itemize}
+  \item The state based likelihood requires a design matrix $Q$. 
+    This is a square
+    matrix that contains zeros for any transitions that can not occur, and 1
+    for those that can.  (Actually, any positive value in (0,2) is allowed: the
+    statefig routine uses the same matrix, where values that differ from 1 lead
+    to curved lines.)
+  \item The baseline hazard is explicit rather than implicit. In the above
+    fit we assume that the underlying hazard function 
+    $\lambda_k(a)= \exp(\beta_{0k} +\beta_{1k}a)$ for each of the 3 hazard
+    functions $k= 1,2,3$, $a$ = age. The cumulative hazard plot shown earlier
+    would suggest that this linearity assumption is questionable for the 
+    ND:dementia transtion.
+  \item Initial values are critical. The default of 0 for all coefficients
+    corresponds in this case to a probability of exp(-30) for a 50 year old
+    to reach age 80 in a non-demented state, and thus a terrible starting guess.
+    (No transitions for 30 years but an assumed mean time to transition of
+    exp(0)=1).
+    We have found it useful to first fit a model with only the intercept
+    and age, then use those results as starting values for further models.
+    (Replace age with the appropriate time scale for the given data, of course.)
+  \item Compuations are much slower. If multiple CPU cores are available,
+    use them.
+\end{itemize}
+
+The difference in log likelhood between a baseline and final model is of
+similar magnitude for the two fits. Figure \ref{hr2022}, later in the document,
+will show that the coefficients are similar as well.
+Both fits include time dependent covariates (amyloid and CMC), which precludes
+drawing probabiliy in state curves, however, which are
+an essential component of a multistate analysis.
+This and other important extensions will be topics in further sections, the
+above is intended to give an initial view.
+
+
+\section{Examples, part 1}
+\subsection{The colon cancer trial}
+The \code{colon} data set in the survival package contains the results of
+a trial of three treatments for stage B/C colon cancer.
+This is a simple 3 state model of entry, progression, and death.
+The data set is organized with 2 rows per subject, the first containing the
+progression outcome and the second the death outcome.
+As a first step, however, we need to decide what to do with the 5 subjects
+for which progression and death were recorded on the same day.
+There is nothing wrong with this, per se: the author has for instance
+had studies where progression was discovered at autopsy, and one might
+reasonably expect an interval censored model to accomodate it.
+However, it has been our experience that ``observation'' of two states on the 
+same day is more often a data creation error, and the \code{icmsh} routine
+currently flags it as such.
+To resolve the conflict we will shift those progressions one day earlier.
+(Or even .001 day if one wants.)
+Also beware the two for whom their progression date is also their last 
+follow-up time, so as not to add a superfluous ``censoring'' row at the end.
+
+<<colon1>>=
+temp1 <- subset(colon, etype==1) # progression
+temp2 <- subset(colon, etype==2) # death
+ties <- (temp1$time==temp2$time & temp1$status==1 & temp2$status==1)
+temp1$time[ties] <- temp1$time[ties] -1 
+
+# Make the timeline data set, we will use only a few of the predictors
+#  The baseline data can use the row for either etype=1 or 2, as the covariates 
+#  are identical
+baseline <- subset(temp1, , c(id, rx, sex, age, node4, extent))
+baseline$time   <- 0
+baseline$status <- -1
+prog <- subset(temp1, status==1, c(id, time, status)) # progression
+dfu  <- subset(temp2, temp1$status==0 | time > temp1$time, 
+               c(id, time, status)) # death or last fu
+dfu$status <- dfu$status *2  # recode as 0/2
+temp3 <- merge(baseline, prog, all=TRUE)
+cdata <- merge(temp3, dfu, all=TRUE)
+cdata$status <- factor(cdata$status, c(0, -1, 1, 2), 
+                       c("censor", "stable", "progression", "death"))
+subset(cdata, id<4)
+@
+
+Subject 1 has both progression and death, subject 2
+is censored without progression at 3087 days.
+
+One of the necessary conditions for a valid model, per underlying counting
+process theory, is the concept of a predictable process.
+In essense, an outcome observed at time $t$ cannot depend on any predictors
+measured at or after time $t$. 
+The cmsh function enforces this: any observed outcome on a given line of data is
+predicted using information from prior rows of data.
+One consequence is that prediction covariates found on the final data row for 
+a subject have no impact. 
+A second action within cmsh is to use the most recently observed value for
+any predictor; it is not necessary to fill in the values for treatment, age at
+entry, etc in every row of the data set.
+It is a bit of a semantic argument whether each row of a timeline data set 
+should contain only values \emph{measured} at that time or all
+values \emph{known} at that time, i.e., whether fixed covariates like sex
+should be propogated across all rows. 
+The cmsh function is happy with either, and more capable data set creation tools
+than the basic R merge used above may well fill these in. 
+
+As a first look compute the transition matrix.
+Then compute the probability in state and cumulative
+hazard curves. Many of the survival routines can accept timeline data via
+the \code{Surv2} operator.
+
+<<coloncount>>=
+survcheck(Surv2(time, status) ~1, cdata, id=id)
+
+aj1 <- survfit(Surv2(time, status) ~ 1, cdata, id=id)
+plot(aj1, col=1:3, xscale=365, lwd=2,
+     xlab="Years post randomization", ylab="Current state")
+legend(400, .54, c("Entry", "Progression", "Death"), lty=1, lwd=2, col=1:3,
+       bty='n')
+plot(aj1, cumhaz=TRUE, col=1:3, xscale=365, lwd=2,  
+     xlab="Years post randomization", ylab= "Cumulative Hazard")
+legend(1500, 2, c("Entry:Progression", "Entry:Death", "Progression:Death"),
+       col=1:3, lwd=2, lty=1, bty='n')
+@ 
+
+In this study about 46\% (423/929) of the subjects had no transitions,
+i.e., were still in the stable state at last observation, 
+both death and progression was observed for 45\% (414/929).  
+Only a small number died without
+progression (38) or were in the progression state at last follow-up.
+
+The cumulative hazards at 8 years are about .7, .1 and 4 for the transitions
+of entry to progression, entry to death and progression to death,
+which provide reasonable starting estimates for the baseline hazards of the
+interval censored fit. 
+Using years as the time scale will give more interpretable coefficients, so we
+add that variable.
+
+Let us start with a simple Cox model fit to serve as comparison.
+<<colonb>>=
+cfit0 <- coxph(Surv2(time, status) ~ rx, data=cdata, id=id)
+cfit0
+
+dummy <- data.frame(rx=c("Obs", "Lev+5FU"))
+surv0 <- survfit(cfit0, newdata= dummy, p0=c(1,0,0))
+dim(surv0)
+plot(surv0, lty=1:2, col=c(1,1,3,3,2,2), lwd=2, xscale=365.25,
+     xlab="Years post chemo", ylab="Probabilty in state")
+legend("topright", c("Stable, placebo", "Stable, 5FU+Lev", 
+                     "Progression, placebo", "Progresion, 5FU+Lev",
+                     "Death, placebo", "Death, 5fu+Lev"), 
+       lty=1:2, lwd=2, col=c(1,1,3,3,2,2),, bty='n')
+@
+
+The hazard ratios show that combined treatment is more effective than either
+Levamisole alone or placebo with respect to progression, 
+and that the latter two are very similar.  The predicted probability in state
+curves bear this out, and have a shape similar to the Aalen-Johansen.
+Since probability in state curves have to add to 1, we often leave out the
+``still in initial state'' ones.
+Now recreate the fit and plot.
+
+<<colon2>>=
+# create the transition matrix
+cstate <- c("stable", "progression", "death")
+ctrans <- matrix(c(0,0,0,1,0,0,1,1,0), nrow=3,
+                 dimnames= list(from= cstate, to= cstate))
+ctrans
+statefig(1:2, ctrans)  # visual check that it is correct
+
+# Crude transitions, as a starting estimate
+crude <-  c(.7, .1, 4)/(8*365)
+cfit1 <- cmsh(Surv(time, status) ~ rx, id=id,  
+              init=rbind(log(crude),0,0),
+             qmatrix= ctrans, exact="death", data= cdata)
+cfit1
+
+surv1 <- predict(cfit1, type="pstate", newdata=dummy, p0=c(1,0,0),
+                 time= c(1:45, seq(60, 8*365, by=60)))
+plot(surv1, lty=1:2, col=c(1,1,3,3,2,2), lwd=2, xscale=365.25,
+     xlab="Years from randomization", ylab="Probability in state")
+legend("topright", c("Stable, placebo", "Stable, 5FU+Lev", 
+                     "Progression, placebo", "Progresion, 5FU+Lev",
+                     "Death, placebo", "Death, 5fu+Lev"), 
+       lty=1:2, lwd=2, col=c(1,1,3,3,2,2),, bty='n')
+@
+
+The cmsh solution is not at all what we expected. The estimated treatment
+coefficients are different than the Cox model and the predicted curves are
+\emph{very} different: P(stable) drops almost immediately to zero. 
+What happened?
+
+The issue is that we have no intermediate values in the data: there are no
+observations of ``stable'' after entry, and so the best MLE estimate for an
+interval censored model is to assume that subjects switch 
+immediately to the progression state.
+The code iterates, increasing the stable:progression rate until the first 
+progression, at 8 days, has a sufficiently large estimated Pr(progression)
+to declare convergence of the log-likelihood. 
+This first progression is on the 5FU+Lev arm, and that no surprisingly has 
+the largest estimated 1:2 transition rate.  
+
+To properly fit this data using an interval censored approach we should have
+all the visits in the data set, then the actual time of progression for a
+subject is more narrowly bracketed.
+Per reference 1 in the help file for the data, patients were
+assessed for progression every 8 weeks for the first year, every 4 months for
+the second year, and every 6 months for years 3 to 5.  
+An interesting exercise is to add psuedo observations that match
+the visit schedule, one per progression, and observe how the estimate behaves. 
+Since subjects cannot revert from progression, it suffices to add a
+single pseudo visit prior each progression, e.g., id 1 had observed progression
+at 968 days = 31.7 months, assume a non-progression visit 6 months before
+at 786 days.
+For progressions after 5 years perhaps assume yearly visits.
+
+A second issue is that cfit1 implicitly assumes a constant baseline
+hazard, i.e., the intercept (the cmsh function automatically adds an intercept 
+term, like lm or glm does).
+This would imply a linear cumulative hazard, which is inconsistent with
+the Aalen-Johansen plot shown above. 
+A piecewise linear with knots at 2 and 4 years might suffice? 
+In an mshmm fit the underlying hazard, as a function of time, is an explicit
+part of the model. This is unlike coxph where the baseline hazard function 
+is implicit, and estimated non-parametrically after solving for $\hat\beta$.
+
+
+\section{Dementia data set}
+\begin{figure}
+<<mcsa1, echo=FALSE>>=
+mstate <- c("CU", "MCI", "dementia", "death")
+mmat <- matrix(0, 4, 4, dimnames=list(mstate, mstate))
+mmat[1,2] <- mmat[2,3] <- 1
+mmat[1:3,4] <- 1
+statefig(rbind(3,1), mmat)
+@  
+ \caption{State space model for the dementia data.}
+ \label{mcsastate}
+\end{figure}
+
+We now return to the dementia data set, with an underlying biological
+model shown in Figure \ref{mcsastate}.
+First, look again, and more completely, at the observed transtions matrix.
+
+<<dement1>>=
+survcheck(Surv2(age, dx) ~1, id=ptnum, data = dementia)
+
+survcheck(Surv2(age, dx, repeated=TRUE) ~1, id=ptnum, dementia)$transitions
+@
+
+As described in the help file for the data set, the on study, off study
+and death data have been collapsed into a single variable \code{dx}.
+The above table of transitions shows that it not uncommon for a patient's
+diagnosis of MCI at one visit to revert back to CU at a later one.
+If we fit a model corresponding to Figure \ref{mcsastate} using this
+raw data, the result will be an estimated likeihood of 0, which would
+be correct since the data contains an impossible (per the diagram)
+transition.
+
+A message which will be repeated multiple times is that you need to
+create the transitions table and \emph{read} it.  Really read it, not
+just a glance.  There are several things we can note from the above.
+\begin{itemize}
+  \item The \code{survcheck} routine was originally written for counting 
+    process data.
+    One aspect of Surv2, which translates from timeline form to that form,
+    is the repeated argument.  When a subject has two sequential visits in
+    the same state, the survfit and coxph routines need to know whether to
+    treat the second observation as a new event. Most of the time they
+    should not, repeated infections in the CGD data set is a counterexample,
+    however.  In this data each row is a visit, the repeated form clearly shows
+    that over half of all visit pairs are CU:CU; most patients stay stable for
+    many years before progression.  The (any) row of the total visits table
+    shows that 53\% (2296/4327) have no recorded changes of state during 
+    follow-up.
+  \item There are 30 instances of a CU:dementia pair.  Per the model we assume
+    that these subjects passed through MCI, we simply did assess them often
+    enough to observe the transient MCI state.
+  \item Dementia:MCI is much less common than MCI:CU.  This reflects on one
+    hand the clinical reality that CU and MCI are more difficult to distinguish
+    than dementia, but also fewer overall dementia cases.
+  \item There are no transitions from death to another state, or from
+    death to censored (further follow-up after death).  This is as it
+    should be.
+  \item Off study dementia only transitions to death. This is because
+    further record reviews are not scheduled for demented subjects.
+  \item There are no transitions from nondem to nondem or off-dem. 
+    This is, it turns out, an interesting artifact of how the online
+    data collection system was designed.
+    The nurse abstracters who review the history have a screen with fields
+    for ``last assessment date for dementia' and 'dementia yes/no'.  
+    At a second, third, etc review for a patient, should one occur,
+    the contents of these are overwritten; thus the master data set
+    at any given time only has the most recent assessment.
+  \item More dementias were found in record review than in study visits.
+    We believe that this reflects informative censoring: subjects whose
+    cognition is slipping selectively drop out, i.e., exactly those most
+    likely to receive a dementia diagnosis at their next visit. 
+  \end{itemize}
+Every real study has unique features and patterns like this.  Something that
+looks odd, e.g., item 6 above, needs to be thought through: the ``feature''
+you are seeing might be a simple programming error. 
+The author's experience has normally been that the total number of calls to
+survcheck (and other tabulations) while building a proper analysis data
+set will exceed the number of calls to model fittting routines during analysis.
+
+\subsection{Partial states}
+For our first analysis we need to create two new variables
+\begin{itemize}
+  \item Sequential progression: the first diagnosis of MCI, dementia (or death)
+  \item Off study diagnosis
+\end{itemize}
+
+The first is treated as a known state, the second as a marker. 
+
+<<forward>>=
+# first restrict the set of states, then stop backwards transitions
+temp1 <- factor(ddata$dx, c("alive", "CU", "MCI", "dementia", "death"))
+temp2 <- unlist(tapply(as.numeric(temp1), ddata$ptnum, function(x) {
+               ifelse(is.na(x) | x==1, 1, cummax(x))} ))
+ddata$maxdx <- factor(temp2, 1:5, c("alive", "CU", "MCI", "dementia", "death"))
+with(ddata, table(dx, maxdx))
+ddata$offdx <- factor(as.numeric(ddata$dx), 5:6, c("ND", "dementia"))
+
+survcheck(Surv2(age, maxdx) ~ 1, ddata, id=ptnum)
+@ 
+The survcheck call verifies that no subject had more than 1 transtion to
+MCI or dementia.
+There were 29 transitions from MCI to dementia, so why did the number of MCI rows
+increase by 38 in the prededing table?  
+An example is subject 120 who has diagnoses of MCI, MCI,
+dementia, MCI, MCI and death; they add 2 to the count.
+
+The offdx variable will modeled as a marker, since it gives partial information
+about the current state.
+States that are observed are coded in the status portion of the Surv call on
+the left hand side of the formula; incompletely observed states use the
+marker argument, with a status of ``no precise state observed at this time'',
+i.e., the first level of the maxdx variable (whatever label was chosen for
+that level). 
+The underlying model for a marker $y$ is that there is separate density of 
+that marker $f_k(y)$ for each true state $k$. 
+For the offdx marker the density is discrete and captured in a simple table.
+
+The next step is to regularize the granularity of the age variable. 
+As justification, imagine two subjects one of which appears every 15 months
+on schedule and the other every 30 months, both of which start at age 60.
+The age variable used in the model will be 60, 61.25, 62.5, 63.75, 65 for
+subject 1, over their first periods of followup, while that for subject 2
+will be 60, 60, 62.5, 62.5, 65 over the same interval.  
+That is, subject 2 will be treated as though they are systematically just a bit 
+younger. 
+Now, over the period of active participation the variation in patient visits
+is small enough that this minor difference won't matter, but it perhaps could
+for two subjects with active vs off-study follow-up. Forcing the age covariate
+to be on an identical schedule reflects a bit of extra care (and increases
+the compute time).
+The choice of single years is based on 200 years of shared experience using
+population rate tables, which has clarified that single year data is a
+sufficiently fine partition.
+
+<<mscfexpand>>=
+ddata2 <- survSplit(Surv2(age, maxdx) ~ ., ddata, id=ptnum,
+                    cut=50:98)
+ddata2$iage <- floor(ddata2$age)   #integer age
+@ 
+
+<<>>=
+#make a new Q matrix
+dstate2 <-c("CU", "MCI", "dementia", "death") 
+q2 <- matrix(0, 4, 4, dimnames=list(dstate2, dstate2))
+q2[1,2] <- q2[2,3] <- 1
+q2[1:3, 4] <- 1
+q2                 # and look at it
+
+# Create a density for the discrete marker
+offdens <- matrix(c(1,1,0,0, 0,0,1,0), 4, 2, 
+                  dimnames=list(dstate2, c("ND", "dementia")))
+offdens
+
+# Do a constrained fit to the 4 state model
+icoef3 <- coef(dfit1, matrix=TRUE)[,c(1,1,2,2,3)]
+colnames(icoef3) <- NULL
+rownames(icoef3)[2] <- "iage"
+dfit2 <- cmsh(list(Surv(age, maxdx) ~ iage + male + any.e4 + agrp + edu4+ cmc,
+    1:2+ 2:3 ~ male * (any.e4 + agrp) +  edu4+ cmc/ common), 
+    data = ddata2, id = ptnum, qmatrix = q2, init = icoef3,
+    marker= state:offdx ~ 0/discrete(init=offdens))
+dfit2b <- cmsh(list(Surv(age, maxdx) ~ iage + male + any.e4 + agrp + edu4+ cmc,
+    1:2+ 2:3 ~ male * (any.e4 + agrp) +  edu4+ cmc/ common), 
+    data = ddata2, id = ptnum, qmatrix = q2, init = dfit2,
+    marker= state:offdx ~ 0/discrete(init=offdens))
+
+dfit3 <- cmsh(list(Surv(age, maxdx) ~ iage + male + any.e4 + agrp + edu4+ cmc,
+    1:2+ 2:3 ~ male * (any.e4 + agrp)), data = ddata2, 
+    id = ptnum, qmatrix = q2, init = dfit2,
+    marker= state:offdx ~ 0/discrete(init=offdens))
+
+# initial coefficients based on a fit of the Minnesota rates
+tdata <- data.frame(iage= 50:95,
+                    rate= 365.25 *survexp.mn[51:96, 1, "2010"])
+gfit <- glm(rate ~ iage, quasipoisson, data=tdata)
+icoef4 <- cbind(coef(gfit), coef(gfit), coef(gfit), coef(gfit), coef(gfit))
+
+dfit4a <-cmsh(Surv(age, maxdx) ~ iage, ddata2, id=ptnum, qmatrix=q2,
+              init= icoef4, 
+              marker= state:offdx ~ 0/discrete(init=offdens))
+              
+dfit4 <- cmsh(list(Surv(age, maxdx) ~ iage + male + any.e4 + agrp + edu4+ cmc,
+    1:2+ 2:3 ~ male * (any.e4 + agrp)), data = ddata2, 
+    id = ptnum, qmatrix = q2, init = dfit4a,
+    marker= state:offdx ~ 0/discrete(init=offdens))
+dfit4b <- cmsh(list(Surv(age, maxdx) ~ iage + male + any.e4 + agrp + edu4+ cmc,
+    1:2+ 2:3 ~ male * (any.e4 + agrp)), data = ddata2, 
+    id = ptnum, qmatrix = q2, init = dfit4,
+    marker= state:offdx ~ 0/discrete(init=offdens))
+@ 
+
+The marker formula reflects the fact that in the likelihood the arrow of
+probability goes from state to marker and not vice versa: P(observed marker) 
+given the true state, not a distribution of states given the marker.
+The \verb+~ 0+ states that there are no estimated parameters for this
+discrete density, it will use the given initial values.
+
+\begin{figure}
+<<f2000>>=
+counts <- with(subset(ddata, !duplicated(ptnum)),
+               table(any.e4, agrp, male)) [,-4,]
+cwt <- counts/sum(counts)
+
+cdata <- expand.grid(any.e4=0:1, agrp=c("low", "moderate", "high"), male=0:1,
+                     age=70, iage=70, edu4=3, cmc=0)
+temp1 <- contrast(dfit0, cdata, weight=cwt, transition=1)
+temp2 <- contrast(dfit1, cdata, weight=cwt, transition=1)
+temp3a <- contrast(dfit3, cdata, weight=cwt, transition=1)
+temp3b <- contrast(dfit3, cdata, weight=cwt, transition="2:3")
+
+delta <- .25
+yy <-c(1:12,14:25, 27:38, 40:51)
+xx1  <- temp1[,1] + outer(temp1[,2], c(0, -1.96, 1.96), '*')
+xx2  <- temp2[,1] + outer(temp2[,2], c(0, -1.96, 1.96), '*')
+xx3a <- temp3a[,1] + outer(temp3a[,2], c(0, -1.96, 1.96), '*')
+xx3b <- temp3b[,1] + outer(temp3b[,2], c(0, -1.96, 1.96), '*')
+xx <- exp(rbind(xx1, xx2, xx3a, xx3b))
+matplot(xx, yy, log='x', xlab="Hazard Ratio", ylab='', yaxt='n', type='n')
+points(xx[,1], yy, pch=rep(c(19,1), each=6), col= c(1,4))
+segments(xx[,2], yy, xx[,3], yy, col=c(1,4))
+abline(h=c(13, 26, 39), lty=2)
+z <- (yy[seq(1,48,2)] + yy[seq(2,48,2)])/2
+axis(2, z, rep(c("low", "mod", "high"), 8), las=2, cex.axis=.6)
+text(.25, c(12,25,38,51)-1, c("ND:dem, coxph", "ND:dem, cmsh", "CU:MCI, cmsh",
+                            "MCI:dem, cmsh"), adj=0)
+abline(v=1, lty=3)
+abline(h=c(6.5, 19.5, 32.5, 45.5), col='gray', lty=3)
+@ 
+  \caption{Comparison of the coefficents for 3 models. The lower 2 panels
+    show the estimate HR for the ND to dementia transtion, for a 
+    transtion based (coxph) and state based (cmsh) model, respectively.
+    The upper two show estimated HR for CU:MCI and MCI:death from a cmsh
+    model. Black: any.e4=0, blue: any.e4=1, solid circle: female, open
+  circle: male.}
+  \label{hr2022}
+\end{figure}
+
+Figure \ref{hr2022} has a lot of information. The lower panel mimics the top
+panel of figure 2 in \cite{Jack22}, imperfectly of course since this data is
+a simulant. We have not shown the transitions to death.
+Panel 2 reveals that a fit treating the same set of states as interval censored 
+has nearly identical coefficients. Since visit intervals in this data set are
+fairly regular this is not surprising.
+
+The top two panels show individual estimates for the CU:MCI and MCI:dementia
+transtions. 
+the same coefficients,
+of figure 
+
+
+
+
+
+\subsection{Partial states}
+\begin{figure}
+<<state10>>=
+astate10 <- c(outer(c("CU", "MCI", "dementia"), c("low", "mod", "high"),
+                   paste, sep='-'), "death")
+alias10 <- data.frame(state=astate10, C= c(rep(1:3, 3), 0),
+                      A= c(rep(1:3, each=3), 0))
+alt10 <-  alias10
+alt10$state <- c(outer(c("CU", "MCI", "dementia"), c("low", "mod", "high"),
+                   paste, sep='\n'), "death")
+amat10 <- qplus(alias10, death="death")
+
+amat10x <- qplus(alt10, death="death")
+indx <- c(1,4,7,2,5,8,3,6,9,10)
+statefig(rbind(3,3,3,1), amat10x[indx, indx], 
+         alty=rep(1:0, c(sum(amat10x[,-10]), 9)))
+@
+ \caption{State space with transitions for both amyloid and cognition.
+   Arrows to death are suppressed for clarity.}
+ \label{state10}
+\end{figure}
+
+
+\bibliographystyle{plain}
+\bibliography{refer}
+
+\end{document}

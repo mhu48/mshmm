@@ -10,7 +10,7 @@ for mix of hidden and directly observed states.}
 \usage{
 cmsh(formula, data, subset, weights, 
     id, qmatrix, markers, iprob, init, fixed,  
-    penalty,  constraint, alias,
+    penalty,  constraint, statedata,
     iter=30, exact= "death", mfun=hmmscore, mpar=list(), mfattr, 
     mc.cores=getOption("mc.cores", 2L), control= cmsh.control(), ...)
 }
@@ -33,7 +33,7 @@ cmsh(formula, data, subset, weights,
   \item{fixed}{optional, initial values that are fixed}
   \item{penalty}{an optional data frame descibing penalties.}
   \item{constraint}{an optional data frame descibing constraints.}
-  \item{alias}{a data frame which provides aliases for the states}
+  \item{statedata}{a data frame which provides aliases for the states}
   \item{iter}{maximum number of iterations}
   \item{exact}{states for which the time of entry to the state
     is known exactly}

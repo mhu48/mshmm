@@ -55,11 +55,24 @@ predict.cmsh <- function(object, newdata, type=c("link", "rate", "pstate"),
         }
         
     } else if (type=="pstate") {
+        if (missing(newdata)) 
+            stop("a newdata argument is required for type = 'pstate'")
+        newdata <- as.data.frame(newdata)  # in case they gave a list
+        ncurve <- nrow(newdata)
+
         # For a probability in state curve the data is restricted to be a single
-        #  set of sequential time, along with its set of time dependent
+        #  set of sequential times, along with its set of time dependent
         #  covariates.
         nstate <- length(object$states)
-        if (missing(time)) stop("type pstate requires a times argument")
+        if (missing(time)) time <- newdata[[1]]
+        else if (is.character(time)) time <- newdata[, time, drop=FALSE]
+        if (is.vector(time)) dtime <-  data.frame(time= time)
+        else dtime <- as.data.frame(time)
+        # dtime is now a data frame with one or more columns
+        if (any(is.na(dtime))) stop("'time' cannot contain missing values")
+        if (!is.numeric(dtime[[1]]) || any(diff(dtime[[1]]) <=0))
+                stop("time must be numeric, in strictly increasing order")
+
         if (missing(p0)) stop("type pstate requires a p0 argument")
         if (length(p0) != length(object$states)) 
             stop("p0 must have an element for each state")
@@ -71,21 +84,9 @@ predict.cmsh <- function(object, newdata, type=c("link", "rate", "pstate"),
                 stop("invalid value for absorb")
         } else absorb <- NULL
 
-        if (is.vector(time)) dtime <-  data.frame(time= time)
-        else dtime <- as.data.frame(time)
-        # dtime is now a data frame with one or more columns
-        if (any(sapply(dtime, function(x) !is.numeric(x) || any(diff(x) <=0))))
-                stop("time must be numeric, in strictly increasing order")
-        if (ncol(dtime) >1) { # all columns must be in lockstep
-            for (i in 2:ncol(dtime))
-                if (!isTRUE(all.equal(diff(dtime[,i]), diff(dtime[,1]))))
-                    stop("all columns of 'time' must have idential increments")
-        }
         
         # By default, model.matrix only grabs the state coefficients
         # We will get a new eta for each curve
-        newdata <- as.data.frame(newdata)  # in case they gave a list
-        ncurve <- nrow(newdata)
         ntime <- nrow(dtime)
         nstate <- length(object$states)
         pstate <- array(0, dim=c(ntime, ncurve, nstate))
@@ -120,7 +121,7 @@ predict.cmsh <- function(object, newdata, type=c("link", "rate", "pstate"),
                     tname=names(dtime), data=newdata, states=object$states)
         class(ret) <- "pstate.cmsh"
         ret
-    }
+    } else stop("unknown type")
 }
 
     

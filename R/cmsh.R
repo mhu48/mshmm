@@ -1,7 +1,7 @@
 # The main function
 cmsh <- function(formula, data, subset, weights, 
                 id, qmatrix, markers, iprob, init, fixed,  
-                penalty,  constraint, alias,
+                penalty,  constraint, statedata,
                 iter=30, exact= "death", mfun=hmmscore, mpar=list(), mfattr, 
                 mc.cores=getOption("mc.cores", 2L), 
                 control= cmsh.control(), ...) {
@@ -79,19 +79,19 @@ cmsh <- function(formula, data, subset, weights,
     else iter <- ceiling(iter)
 
     # Is there state data?
-    if (!missing(alias)) { # check that it is okay
-        if (!inherits(alias, "data.frame"))
-            stop("alias must be a data frame")
-        if (names(alias)[1] != "state" || !is.character(alias$state))
-            stop("first variable in alias must be a character variable named 'state'")
-        indx <- match(statenames, alias$state, nomatch=0)
+    if (!missing(statedata)) { # check that it is okay
+        if (!inherits(statedata, "data.frame"))
+            stop("statedata must be a data frame")
+        if (names(statedata)[1] != "state" || !is.character(statedata$state))
+            stop("first variable in statedata must be a character variable named 'state'")
+        indx <- match(statenames, statedata$state, nomatch=0)
         if (any(indx==0))
-            stop("alias$state does not contain all the states")
-        alias <- alias[indx,]  # same row order as the states
-        # Alias might have rows for states that are not in the data set,
+            stop("statedata$state does not contain all the states")
+        statedata <- statedata[indx,]  # same row order as the states
+        # Statedata might have rows for states that are not in the data set,
         #  for instance if the hmm call had used a subset argument.  Any of
         #  those are eliminated by the above line.
-    } else alias <- data.frame(state=statenames)
+    } else statedata <- data.frame(state=statenames)
      
     # if the formula is a list, do the first level of processing on it,
     #  which is to pick off the list of variable names
@@ -115,7 +115,7 @@ cmsh <- function(formula, data, subset, weights,
     # grab markers for the hidden states
     if (missing(markers)) nmarker <- 0
     else {
-        marker1 <- parsemarker1(markers, alias)
+        marker1 <- parsemarker1(markers, statedata)
         nmarker <- length(unique(marker1$marker))  # number of markers
         # the result has a separate list of markers (character) and formulas for
         #  the covariates of the markers (most or all of which might be ~1)
@@ -187,7 +187,7 @@ cmsh <- function(formula, data, subset, weights,
     contrasts <- attr(X, "contrasts")
     
     # Do the second pass on the formula and markers
-    parse2 <- parsecovar2(parse1, alias, dformula, Terms, qmatrix,
+    parse2 <- parsecovar2(parse1, statedata, dformula, Terms, qmatrix,
                           colnames(X), xassign)
     cmap <- parse2$cmap # coefficients for the transitions
     tmap <- parse2$tmap # terms for the transitions
@@ -201,7 +201,7 @@ cmsh <- function(formula, data, subset, weights,
     if (nmarker >0) {
         markerlevels <- lapply(marker1$marker, function(x) 
             levels(mf[[x]]))
-        marker2 <- parsemarker2(marker1, alias, Terms, colnames(X), 
+        marker2 <- parsemarker2(marker1, statedata, Terms, colnames(X), 
                                 xassign, markerlevels)
         nlp[2] <- ncol(marker2$cmap)
         if (nlp[2] ==0) b2 <- 0 else b2 <- nlp[1] + 1:nlp[2]
