@@ -1,3 +1,4 @@
+
 \documentclass{article}
 \usepackage{amsmath}
 \title{Censored multistate hazard (MSH) models}
@@ -389,7 +390,7 @@ There is nothing wrong with this, per se: the author has for instance
 had studies where progression was discovered at autopsy, and one might
 reasonably expect an interval censored model to accomodate it.
 However, it has been our experience that ``observation'' of two states on the 
-same day is more often a data creation error, and the \code{icmsh} routine
+same day is more often a data creation error, and the \code{cmsh} routine
 currently flags it as such.
 To resolve the conflict we will shift those progressions one day earlier.
 (Or even .001 day if one wants.)

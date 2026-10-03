@@ -217,7 +217,7 @@ hmm2 <- function(who,  B) {
                     nc[k] <- nc[k] +1
                     temp <- rfun[[k]][,nc[k]]
                     if (nlp[3]) pi.d <- pi.d * temp 
-                    if (nlp[1]) P.d  <- P.d * rep(temp, each=nlp[1])
+                    if (nlp[1]) P.d  <- P.d * rep(temp, each= nrow(P.d))
                     if (nlp[2]) R.d  <- R.d * temp
                     if (!is.null(rgrad[[k]])) { #if there are derivatives
                         j <- rlist$e2map[[k]] # which linear predictors

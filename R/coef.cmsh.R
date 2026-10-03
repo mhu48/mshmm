@@ -55,40 +55,47 @@ print.cmsh <- function(x, digits=max(1L, getOption("digits")- 3L),
 	cat("\n")
 	}
    
-     coef <- x$coefficients
-     se <- sqrt(diag(x$var))
-     tmp <- cbind(coef, exp(coef), se, coef/se,
-                  pchisq((coef/se)^2, 1, lower.tail=FALSE))
-     dimnames(tmp) <- list(names(coef), c("coef", "exp(coef)",
-                                          "se(coef)", "z", "p"))
-     # print it group by group
-     # lazy: I don't want to type x$cmap many times
-     #  remove transitions with no covariates
-     cmap <- x$cmap[, colSums(x$cmap) > 0, drop=FALSE]
-     cname <- colnames(cmap)
-     printed <- rep(FALSE, length(cname))
-     rname <- rownames(cmap)
      extrarows <- NULL
-     for (i in 1:length(cname)) {
-         # if multiple colums of tmat are identical, only print that
-         #  set of coefficients once
-         if (!printed[i]) {
-             j <- apply(cmap, 2, function(x) all(x == cmap[,i])) 
-             printed[j] <- TRUE
-             tlab <- c(paste(cname[j], collapse=", "), "") #label for block
-             if (nchar(tlab[1]) > 20) {     
-                 k <- length(extrarows) +1L
-                 extrarows <- c(extrarows, 
-                                paste(LETTERS[k], tlab, sep=': '))
-                 tlab <- c(LETTERS[k], "") # new block label
+     if (is.null(x$var)) {
+         # when iter=0 is used derivatives and variance are not computed
+         print(coef(x, matrix=TRUE), digits=digits)
+         cat('\n')
+     }
+     else {
+         coef <- x$coefficients
+         se <- sqrt(diag(x$var))
+         tmp <- cbind(coef, exp(coef), se, coef/se,
+                      pchisq((coef/se)^2, 1, lower.tail=FALSE))
+         dimnames(tmp) <- list(names(coef), c("coef", "exp(coef)",
+                                              "se(coef)", "z", "p"))
+         # print it group by group
+         # lazy: I don't want to type x$cmap many times
+         #  remove transitions with no covariates
+         cmap <- x$cmap[, colSums(x$cmap) > 0, drop=FALSE]
+         cname <- colnames(cmap)
+         printed <- rep(FALSE, length(cname))
+         rname <- rownames(cmap)
+         for (i in 1:length(cname)) {
+             # if multiple colums of tmat are identical, only print that
+             #  set of coefficients once
+             if (!printed[i]) {
+                 j <- apply(cmap, 2, function(x) all(x == cmap[,i])) 
+                 printed[j] <- TRUE
+                 tlab <- c(paste(cname[j], collapse=", "), "") #label for block
+                 if (nchar(tlab[1]) > 20) {     
+                     k <- length(extrarows) +1L
+                     extrarows <- c(extrarows, 
+                                    paste(LETTERS[k], tlab, sep=': '))
+                     tlab <- c(LETTERS[k], "") # new block label
+                 }
+                 tmp2 <- tmp[cmap[,i],, drop=FALSE]
+                 names(dimnames(tmp2)) <- tlab
+                 # restore character row names
+                 rownames(tmp2) <- rname[cmap[,i]>0]
+                 printCoefmat(tmp2, digits=digits, P.values=TRUE, 
+                              has.Pvalue=TRUE, signif.stars=signif.stars, ...)
+                 cat("\n")   
              }
-             tmp2 <- tmp[cmap[,i],, drop=FALSE]
-             names(dimnames(tmp2)) <- tlab
-             # restore character row names
-             rownames(tmp2) <- rname[cmap[,i]>0]
-             printCoefmat(tmp2, digits=digits, P.values=TRUE, 
-                          has.Pvalue=TRUE, signif.stars=signif.stars, ...)
-             cat("\n")   
          }
      }
 
