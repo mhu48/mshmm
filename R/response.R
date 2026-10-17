@@ -337,6 +337,42 @@ mlogit <- function(eta, gradient=FALSE) {
     init / rowSums(init)
 }
 
+.static_discrete_init <- function(init, stateinfo, mlevel) {
+    if (!is.matrix(init)) stop("discrete init must be a probability matrix")
+    ngroup <- length(stateinfo$levels)
+    nstate <- length(stateinfo$index)
+    if (ncol(init) != length(mlevel))
+        stop("discrete init columns must match marker levels")
+    if (!is.null(colnames(init))) {
+        indx <- match(mlevel, colnames(init))
+        if (anyNA(indx) || anyDuplicated(indx))
+            stop("discrete init columns must match marker levels")
+        init <- init[, indx, drop=FALSE]
+    }
+    if (any(!is.finite(init)) || any(init < 0))
+        stop("discrete init must contain finite nonnegative probabilities")
+
+    if (nrow(init) == nstate) {
+        return(list(state=unname(init), display=init))
+    }
+    if (nrow(init) > ngroup)
+        stop("discrete init has too many rows")
+
+    grouped <- matrix(0, ngroup, ncol(init),
+                      dimnames=list(as.character(stateinfo$levels), mlevel))
+    if (is.null(rownames(init))) rows <- seq_len(nrow(init))
+    else {
+        rows <- match(rownames(init), as.character(stateinfo$levels))
+        if (anyNA(rows) || anyDuplicated(rows))
+            stop("discrete init rows must match latent marker levels")
+    }
+    grouped[rows, ] <- init
+    missmat <- matrix(0, nstate, ncol(init), dimnames=list(NULL, mlevel))
+    keep <- stateinfo$index > 0L
+    missmat[keep, ] <- grouped[stateinfo$index[keep], , drop=FALSE]
+    list(state=unname(missmat), display=grouped)
+}
+
 .discrete_initial_eta <- function(prob, emap) {
     ncoef <- max(c(0L, emap))
     if (!ncoef) return(numeric())
@@ -416,22 +452,20 @@ discrete <- function(stateinfo, mlevel, init, pattern, static=FALSE, ...) {
         pname <- labels[match(seq_len(ncoef), emap)]
     } else pname <- NULL
 
-    init_prob <- if (missing(init)) NULL else
+    init_prob <- if (missing(init)) NULL else if (static) NULL else
         .discrete_init_matrix(init, stateinfo, mlevel)
     if (static) {
-        if (is.null(init_prob)) stop("init is required for a fixed discrete marker")
-        missmat <- matrix(0, nstate, nlevel,
-                          dimnames=list(NULL, mlevel))
-        keep <- stateinfo$index > 0L
-        missmat[keep, ] <- init_prob[stateinfo$index[keep], , drop=FALSE]
-        fixed_probability <- missmat
+        if (missing(init)) stop("init is required for a fixed discrete marker")
+        static_init <- .static_discrete_init(init, stateinfo, mlevel)
+        fixed_probability <- static_init$state
         rfun <- function(y, gradient=FALSE) {
             if (is.factor(y)) y <- as.integer(y)
             fixed_probability[, y, drop=FALSE]
         }
         return(list(name="discrete", family="discrete", rfun=rfun,
                     pname=NULL, subset=integer(), initial=numeric(),
-                    initial_user=TRUE, fixed=TRUE, probability=init_prob,
+                    initial_user=TRUE, fixed=TRUE,
+                    probability=static_init$display,
                     marker_levels=mlevel, latent_levels=stateinfo$levels,
                     state_index=stateinfo$index))
     }

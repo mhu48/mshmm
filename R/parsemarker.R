@@ -154,6 +154,14 @@ parsemarker2 <- function(parse1, statedata, Terms, Xname, Xassign,
     nform  <- length(parse1$nmarker) #number of formulas, also number of options
     umarker <- unique(marker)
     nmarker <- length(umarker)
+    if (is.null(markerlevel)) markerlevel <- rep(list(NULL), nmarker)
+    else if (length(markerlevel) == nform && nform != nmarker) {
+        by_occurrence <- rep(markerlevel, parse1$nmarker)
+        markerlevel <- lapply(umarker, function(x)
+            by_occurrence[[match(x, marker)]])
+    }
+    if (length(markerlevel) != nmarker)
+        stop("markerlevel must have one element per unique marker")
     # findex is a list, first element = which elements of markers were added
     #  by the first formula, second formula, etc.
     findex <- split(seq(along=marker), rep(seq(along.with=parse1$nmarker), parse1$nmarker))
