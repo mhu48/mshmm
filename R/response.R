@@ -360,8 +360,9 @@ mlogit <- function(eta, gradient=FALSE) {
     if (nrow(init) > ngroup) {
         rows <- if (is.null(rownames(init))) seq_len(ngroup) else
             match(as.character(stateinfo$levels), rownames(init))
-        if (anyNA(rows) || anyDuplicated(rows))
-            stop("discrete init rows must match latent marker levels")
+        if (anyNA(rows)) rows <- seq_len(ngroup)
+        if (anyDuplicated(rows))
+            stop("discrete init rows must uniquely match latent marker levels")
         grouped[,] <- init[rows, , drop=FALSE]
     } else if (is.null(rownames(init))) {
         grouped[seq_len(nrow(init)), ] <- init
