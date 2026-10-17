@@ -355,18 +355,22 @@ mlogit <- function(eta, gradient=FALSE) {
     if (nrow(init) == nstate) {
         return(list(state=unname(init), display=init))
     }
-    if (nrow(init) > ngroup)
-        stop("discrete init has too many rows")
-
     grouped <- matrix(0, ngroup, ncol(init),
                       dimnames=list(as.character(stateinfo$levels), mlevel))
-    if (is.null(rownames(init))) rows <- seq_len(nrow(init))
-    else {
+    if (nrow(init) > ngroup) {
+        rows <- if (is.null(rownames(init))) seq_len(ngroup) else
+            match(as.character(stateinfo$levels), rownames(init))
+        if (anyNA(rows) || anyDuplicated(rows))
+            stop("discrete init rows must match latent marker levels")
+        grouped[,] <- init[rows, , drop=FALSE]
+    } else if (is.null(rownames(init))) {
+        grouped[seq_len(nrow(init)), ] <- init
+    } else {
         rows <- match(rownames(init), as.character(stateinfo$levels))
         if (anyNA(rows) || anyDuplicated(rows))
             stop("discrete init rows must match latent marker levels")
+        grouped[rows, ] <- init
     }
-    grouped[rows, ] <- init
     missmat <- matrix(0, nstate, ncol(init), dimnames=list(NULL, mlevel))
     keep <- stateinfo$index > 0L
     missmat[keep, ] <- grouped[stateinfo$index[keep], , drop=FALSE]
