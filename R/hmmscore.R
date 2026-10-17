@@ -70,7 +70,8 @@ hmmscore <- function(par, fn, gr, iter=30,
         if (ncon>0) {
             Ebeta <- as.vector(constraint[,-1] %*% par)
             boundary <- shrink*halving*(Ebeta + constraint[,1])
-            temp <- solve.QP(S+dmat, -fit$deriv, -t(constraint[,-1]),
+            temp <- solve.QP(S+dmat, -fit$deriv,
+                             -t(constraint[,-1, drop=FALSE]),
                              -boundary)
             newpar <- par- temp$solution*shrink*halving
             active <- sort(temp$iact)
