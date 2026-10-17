@@ -14,34 +14,33 @@
 # In the math vignette, the vector of coefs is a Greek beta, so you will see
 #  'beta' used a lot in the comments and description.
 #
-# Initial state probabilities from linear predictors (used when there is no
-#  iprob matrix, i.e. nlp[3] > 0).  A multinomial logit with state 1 as the
-#  reference: eta[k] is the log odds of state k+1 versus state 1, for
-#  k = 1, ..., length(eta); any later states (e.g. death) have probability 0.
-# With gradient=TRUE the result has attribute "gradient", an nstate x
-#  length(eta) matrix of derivatives with respect to eta (see "derivative,
-#  linear predictor" in the code vignette).  hmm2 turns this into derivatives
-#  wrt the coefficients with eta.beta3.
+# Convert initial-state logits to probabilities.  State 1 is the reference;
+# later states without a predictor (for example, death) start at probability
+# zero.  The gradient is with respect to the supplied logits.
 initfun <- function(nstate, eta, gradient=FALSE) {
     neta <- length(eta)
-    if (neta >= nstate) stop("too many linear predictors for the initial state")
-    e <- c(1, exp(eta))
-    p <- c(e/sum(e), rep(0, nstate - neta - 1L))
+    if (neta >= nstate)
+        stop("too many linear predictors for the initial state")
+    shifted <- c(0, eta)
+    shifted <- shifted - max(shifted)
+    probability <- exp(shifted)
+    probability <- c(probability / sum(probability),
+                     rep(0, nstate - neta - 1L))
     if (gradient) {
-        # d p_j / d eta_k = p_j (I(j = k+1) - p_{k+1})
-        g <- -outer(p, p[1L + seq_len(neta)])
-        g[cbind(1L + seq_len(neta), seq_len(neta))] <-
-            p[1L + seq_len(neta)] * (1 - p[1L + seq_len(neta)])
-        attr(p, "gradient") <- g
+        target <- probability[1L + seq_len(neta)]
+        deriv <- -outer(probability, target)
+        deriv[cbind(1L + seq_len(neta), seq_len(neta))] <-
+            target * (1 - target)
+        attr(probability, "gradient") <- deriv
     }
-    p
+    probability
 }
 
 hmm1 <- function(who, B) {
     if (control$debug >0) cat("in hmm1\n")
     rows <- which(id == who)  # the subjects of interest
     eta <- X[rows,] %*% B
-    # starting probability: a fixed iprob matrix, or linear predictors
+    # starting probability
     if (!is.null(iprob)) alpha <- iprob[who,]
     else alpha <- initfun(nstate, eta[1,e3], gradient=FALSE)
     
@@ -155,13 +154,13 @@ hmm2 <- function(who,  B) {
     R.d  <- matrix(0., nstate, nparm[2])   # might be 0 columns
     pi.d <- matrix(0., nstate, nparm[3])   # might be 0 columns
 
-    # starting probability: a fixed iprob matrix, or linear predictors
+    # starting probability
     if (!is.null(iprob)) alpha <- iprob[who,]
     else {
         alpha <- initfun(nstate, eta[1,e3], gradient=TRUE)
-        # chain rule: d alpha/d eta (nstate x nlp[3]) times d eta/d beta
-        #  (nlp[3] x nparm[3]), the initial state block of cmap
-        if (nlp[3] >0) pi.d <- attr(alpha, 'gradient') %*% eta.beta3(X[rows[1],])
+    }
+    if (is.null(iprob) && nlp[3] >0) {
+        pi.d <- attr(alpha, 'gradient') %*% eta.beta3(X[rows[1],])
         attr(alpha, 'gradient') <- NULL  # no longer needed
     }
     
@@ -169,7 +168,7 @@ hmm2 <- function(who,  B) {
     rfun <- rgrad <- vector("list", nmarker)  # results from calling rfun()s
     # rfun will be a matrix with nstate rows and nk col, nk = number of
     #  rows which have marker k not missing
-    # rgrad is array of (nstate, length(e2map), nk)= (state, lp, row)
+    # rgrad is array of (nstate, nk, length(e2map)) = (state, row, lp)
     rneed <- (otype[rows]==3)  # observed markers
     # rlist was created in cmsh from marker2$response
     if (any(rneed)) {
@@ -211,12 +210,14 @@ hmm2 <- function(who,  B) {
             dtemp <- rmat[,k]  #rate at this point
             dtemp[k] <- 0      # we don't want -1*rowsum (r[k,k]) here
             if (nlp[3]) {
-                ptmp <- colSums(pi.d * dtemp)
-                pi.d[,] <- 0; pi.d[k,] <- ptmp
+                temp_deriv <- colSums(pi.d * rep(dtemp, nparm[3]))
+                pi.d[,] <- 0
+                pi.d[k, ] <- temp_deriv
             }
             if (nlp[2]) {
-                rtmp <- colSums(R.d * dtemp)
-                R.d[,] <- 0; R.d[k,] <- rtmp
+                temp_deriv <- colSums(R.d * rep(dtemp, nparm[2]))
+                R.d[,] <- 0
+                R.d[k, ] <- temp_deriv
             }
             if (control$debug >1) {cat("death "); browser()}
             # Why the j-1 below?  A death density will depend on covariates
@@ -245,17 +246,17 @@ hmm2 <- function(who,  B) {
             for (k in 1:nmarker) {
                 if (!(is.na(ymarker[j,k]))) {
                     nc[k] <- nc[k] +1
-                    temp <- rfun[[k]][,nc[k]]   # P(y | state), one per state
+                    temp <- rfun[[k]][,nc[k]]
                     if (nlp[3]) pi.d <- pi.d * temp 
-                    #if (nlp[1]) P.d  <- P.d * rep(temp, each=nlp[1]) # Terry previous
-                    if (nlp[1]) P.d <- P.d * rep(temp, each = nrow(P.d)) # MMR changed
+                    if (nlp[1]) P.d  <- P.d * rep(temp, each=nparm[1])
                     if (nlp[2]) R.d  <- R.d * temp
                     if (!is.null(rgrad[[k]])) { #if there are derivatives
-                        # d alpha_new = d alpha * f + alpha * df/deta * deta/dbeta
-                        lpk <- rlist[[k]]$e2map   # this marker's lp (marker block)
-                        G <- matrix(rgrad[[k]][, nc[k], ], nrow=nstate)
-                        Z <- eta.beta2(X[j,])[lpk, , drop=FALSE]
-                        R.d <- R.d + (alpha * G) %*% Z
+                        e2map <- rlist[[k]]$e2map
+                        gtemp <- rgrad[[k]][, nc[k], , drop=FALSE]
+                        gtemp <- matrix(gtemp, nrow=nstate,
+                                        ncol=length(e2map))
+                        ztemp <- eta.beta2(X[j, ])[e2map, , drop=FALSE]
+                        R.d <- R.d + (alpha * gtemp) %*% ztemp
                     } 
                     if (control$debug>3) browser()
                     alpha <- alpha * temp

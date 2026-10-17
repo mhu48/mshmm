@@ -6,6 +6,7 @@ cmsh <- function(formula, data, subset, weights,
                 mc.cores=getOption("mc.cores", 2L), 
                 control= cmsh.control(), ...) {
     Call <- match.call()
+    global_init_supplied <- !missing(init)
     time0 <- proc.time()
 
     ## We want to pass any ... args to cmsh.control, but not pass things
@@ -199,7 +200,7 @@ cmsh <- function(formula, data, subset, weights,
     #   categories (used to set up response functions)
     # 
     if (nmarker >0) {
-        markerlevels <- lapply(marker1$marker, function(x) 
+        markerlevels <- lapply(unique(marker1$marker), function(x)
             levels(mf[[x]]))
         marker2 <- parsemarker2(marker1, statedata, Terms, colnames(X), 
                                 xassign, markerlevels)
@@ -342,72 +343,70 @@ cmsh <- function(formula, data, subset, weights,
         } else stop("init must be a numeric vector, matrix, or prior fit")
     }
 
-    # starting values for estimated marker parameters (e.g. discrete(init=)),
-    #  used for any marker intercept the user's init did not set
-    if (nmarker > 0 && nlp[2] > 0 && !is.null(marker2$init)) {
-        for (k in seq_len(nlp[2])) {
-            jj <- nlp[1] + k
-            if (cmap[1, jj] > 0 && B[1, jj] == 0 && !is.na(marker2$init[k]))
-                B[1, jj] <- marker2$init[k]
-        }
-    }
-
-    # continuous markers with no starting values: start every group of
-    #  states at the overall mean and standard deviation of the marker
-    #  (moment estimates for a beta marker), which avoids a zero likelihood
-    #  from the default of mean 0, std 1
-    if (nmarker > 0 && nlp[2] > 0) {
+    # Marker-level init values are on the natural response scale and override
+    # a global init value.  In the absence of either, continuous markers start
+    # at their overall location and scale; transition parameters retain zero.
+    if (nmarker > 0) {
+        marker_names <- unique(marker1$marker)
         for (i in seq_along(marker2$response)) {
-            r <- marker2$response[[i]]
-            cols <- marker2$e2map[[i]]
-            if (is.null(r$name) || !(r$name %in% c("gaussian", "logistic", "beta"))
-                || length(cols) == 0 || !is.null(r$init)) next
-            jj <- nlp[1] + cols
-            if (any(B[1, jj] != 0)) next          # the user supplied values
-            yv <- mf[[names(marker2$e2map)[i]]]
-            yv <- yv[!is.na(yv)]
-            if (length(yv) < 2) next
-            m0 <- mean(yv); s0 <- sd(yv)
-            if (r$name == "beta") {
-                k0 <- max(m0*(1 - m0)/s0^2 - 1, 0.1)
-                start2 <- log(c(m0*k0, (1 - m0)*k0))
-            } else start2 <- c(m0, log(s0))
-            free <- cmap[1, jj] > 0
-            B[1, jj[free]] <- rep(start2, length.out=length(jj))[free]
+            response <- marker2$response[[i]]
+            if (!length(response$e2map)) next
+            start <- response$initial
+            if (!isTRUE(response$initial_user) && !global_init_supplied)
+                start <- .marker_default_initial(response, mf[[marker_names[i]]])
+            if (length(start)) {
+                if (length(start) != length(response$e2map))
+                    stop("marker init has the wrong number of linear predictors")
+                columns <- nlp[1] + response$e2map
+                active <- cmap[1, columns] != 0L
+                B[1, columns[active]] <- start[active]
+                marker2$response[[i]]$initial <- start
+            }
         }
     }
 
     if (!missing(fixed)) {
         if (is.matrix(fixed)) {
-            rmatch <- match(rownames(fixed), rownames(cmap))
-            cmatch <- match(colnames(fixed), colnames(cmap))
+            rmatch <- if (is.null(rownames(fixed))) {
+                if (nrow(fixed) != nrow(cmap))
+                    stop("fixed matrix has the wrong number of rows")
+                seq_len(nrow(cmap))
+            } else match(rownames(fixed), rownames(cmap))
+            cmatch <- if (is.null(colnames(fixed))) {
+                if (ncol(fixed) != ncol(cmap))
+                    stop("fixed matrix has the wrong number of columns")
+                seq_len(ncol(cmap))
+            } else match(colnames(fixed), colnames(cmap))
             if (any(is.na(rmatch))) 
                 stop("fixed has covariates not in the current model")
             if (any(is.na(cmatch)))
                 stop("fixed has linear predictors not in the current model")
-            if (is.logical(test)) cmap[test] <- -cmap(test)
-            else if (is.numeric(test)) cmap[test>0] <- - cmap[test>0]
-            else stop("fixed argument must be logical or numeric")
+            map_slice <- cmap[rmatch, cmatch, drop=FALSE]
+            if (is.logical(fixed)) selected <- !is.na(fixed) & fixed
+            else if (is.numeric(fixed)) {
+                selected <- is.finite(fixed)
+                B_slice <- B[rmatch, cmatch, drop=FALSE]
+                B_slice[selected] <- fixed[selected]
+                B[rmatch, cmatch] <- B_slice
+            } else stop("fixed argument must be logical or numeric")
+            fixed_ids <- unique(map_slice[selected & map_slice != 0L])
+            for (parameter_id in fixed_ids)
+                cmap[cmap == parameter_id] <- -parameter_id
         } else { # it should be a vector
             fixed <- as.logical(fixed)  # change numeric to T/F
             if (!is.null(names(fixed))) {
-                index <- match(names(fixed), pname)
+                index <- match(names(fixed), beta.names)
                 if (any(is.na(index)))
                     stop("fixed has an coefficient not found in the model: ",
                          (names(fixed)[is.na(index)])[1])
-                i2 <- which(cmap %in% index[fixed])
-                cmap[i2] <- -cmap[i2]  # a negative index marks it
+                fixed_ids <- index[!is.na(fixed) & fixed]
             }
             else if (length(fixed) != nparam) stop("wrong length for fixed")
-            else {                
-                i2 <- (which(cmap>0))[fixed]
-                cmap[i2] <- -cmap[i2]
-            }
+            else fixed_ids <- which(!is.na(fixed) & fixed)
+            for (parameter_id in fixed_ids)
+                cmap[cmap == parameter_id] <- -parameter_id
         } 
     }
-
-    # Import any init() or fixed() from the options
-    # not yet done
 
     # Standardize the X matrix.  All linear preditors must include an intercept
     # To do otherwise, e.g., allow "~ group -1" as a formula, makes our formula
@@ -440,13 +439,13 @@ cmsh <- function(formula, data, subset, weights,
 
     # preprocess constraint and penalty
     if (!missing(constraint)) {
-        constraint <- hmmconstraint(constraint, Terms, cmap)
-        constraint <- constraint %*% xtrans # users write for untransformed X
+        constraint <- hmmconstraint(constraint, Terms, cmap, xtrans, B)
     } else constraint <- NULL
     if (!missing(penalty)) {
-        penalty <- hmmconstraint(penalty, Terms)
-        penalty <- penalty %*% xtrans # the are written for untransformed X
-        penmat <- crossprod(penalty)
+        penalty <- hmmconstraint(penalty, Terms, cmap, xtrans, B)
+        if (any(penalty[,1] != 0))
+            stop("penalties involving fixed coefficients are not supported")
+        penmat <- crossprod(penalty[,-1,drop=FALSE])
     } else penmat <- NULL
     
     # initial probabilities for each subject
@@ -515,9 +514,7 @@ cmsh <- function(formula, data, subset, weights,
         ymarker <- mf[unique(marker1$marker)]  # a data frame
         nmarker <- ncol(ymarker)
         rlist <- marker2$response
-        # attach each marker's linear predictors (columns of the marker block)
-        for (i in seq_along(rlist)) rlist[[i]]$e2map <- marker2$e2map[[i]]
-        eta <- X %*% B
+        if (length(b2)>0) eta <- X %*% B
         for (i in 1:nmarker) {
             # check for a valid response vector
             if (!is.null(rlist[[i]]$checkfun)) rlist[[i]]$checkfun(ymarker[,i])
@@ -527,7 +524,7 @@ cmsh <- function(formula, data, subset, weights,
                 # the e2map indices from parsemarker are within the cmap cols
                 #  for markers, hmm1 and hmm2 will want overall cmap index
                 j <- rlist[[i]]$e2map + nlp[1]
-                test <- tfun(ymarker[keep,i], eta[keep, j])
+                test <- tfun(ymarker[keep,i], eta[keep, j, drop=FALSE])
                 }
             else test <- tfun(ymarker[keep,i]) #e.g. a fixed missclass matrix
             if (nrow(test) != nstate || ncol(test) != sum(keep)) 
@@ -548,15 +545,16 @@ cmsh <- function(formula, data, subset, weights,
     }
     else if (mfunname == "hmmscore") 
         mfattr<- list(param= "par", fn="fn", deriv=TRUE, gfun=NULL, 
-                     iter= "iter", result=2)
+                     iter= "iter", result=2, constraint="constraint")
     else if (mfunname== "optim")
         mfattr <- list(param="par", fn="fn", deriv= TRUE, gfun="gr", 
                      iter= list(control="maxit"), result=3)
     else if (mfunname== "hmm1" || mfunname== "hmm2") 
-        mfattr <- list(param="par", fun="fn", deriv=FALSE, 
+        mfattr <- list(param="par", fn="fn", deriv=FALSE,
                        iter= "iter", result=4)
     else if (!missing(mfattr)) {
-        mfname <- c("param", "fun", "deriv", "iter", "result")
+        if (is.null(mfattr$fn) && !is.null(mfattr$fun)) mfattr$fn <- mfattr$fun
+        mfname <- c("param", "fn", "deriv", "iter", "result")
         if (any(is.na(match(mfname, names(mfattr)))))
             stop("the mfattr argument is not complete")
     } else stop("user supplied optimizer must include mfattr argument")
@@ -568,7 +566,7 @@ cmsh <- function(formula, data, subset, weights,
 
     time2 <- proc.time()
     
-    # Compute a variance estimate
+    # Compute a variance estimate on the internal coefficient scale.
     temp <- mfit$fit
     if (!is.null(temp$hessian)) {
         if (!is.null(temp$U)) {
@@ -580,29 +578,36 @@ cmsh <- function(formula, data, subset, weights,
         vcov <- gsolve(temp$S)
     } else vcov <- NULL
 
-    # Undo any scaling and centering
+    # Update from the optimizer and undo any scaling and centering.
+    B <- coef.to.B(mfit$param, cmap, B)
     if (control$scale || control$center) {
-        B <- coef.to.B(mfit$param, cmap, B)
-        Bscale <- xtrans %*% B
-        param <- B.to.coef(Bscale, cmap, fixed=TRUE)
-        # the variance was computed on the centered/scaled X; the map from
-        #  those coefficients to the reported ones is linear (xtrans), so
-        #  transform it with the Jacobian J:  V = J V0 J'
-        if (!is.null(vcov)) {
-            nfree <- nrow(vcov)
-            J <- matrix(0, nfree, nfree)
-            for (i in seq_len(nfree)) {
-                ei <- rep(0, nfree); ei[i] <- 1
-                Bi <- coef.to.B(ei, cmap, 0*B)
-                J[, i] <- B.to.coef(xtrans %*% Bi, cmap)
-            }
-            vcov <- J %*% vcov %*% t(J)
+        B <- xtrans %*% B
+    }
+    param <- B.to.coef(B, cmap, fixed=TRUE)
+
+    # Apply the same linear transformation to the covariance matrix.  This
+    # also expands the matrix to include fixed/shared coefficient identifiers.
+    if (!is.null(vcov)) {
+        ninternal <- length(mfit$param)
+        transform <- matrix(0, nrow=length(param), ncol=ninternal)
+        for (j in seq_len(ninternal)) {
+            unit <- numeric(ninternal)
+            unit[j] <- 1
+            delta <- coef.to.B(unit, cmap,
+                               matrix(0, nrow(cmap), ncol(cmap)))
+            if (control$scale || control$center) delta <- xtrans %*% delta
+            transform[, j] <- B.to.coef(delta, cmap, fixed=TRUE)
         }
+        vcov <- transform %*% vcov %*% t(transform)
     }
 
     # Add names
     pname <- outer(rownames(cmap), colnames(cmap), paste, sep='_')
-    names(param) <- pname[match(unique(cmap[cmap>0]), cmap)]
+    parameter_ids <- seq_along(param)
+    names(param) <- vapply(parameter_ids, function(i) {
+        location <- which(abs(cmap) == i)[1L]
+        if (is.na(location)) paste0("parameter_", i) else pname[location]
+    }, character(1))
     compute.time <- rbind(setup= time1-time0,
                           compute= time2- time1)
 
@@ -616,28 +621,20 @@ cmsh <- function(formula, data, subset, weights,
                   )
     if (!is.null(vcov)) final$var <- vcov
 
-    # Discrete markers: the misclassification (emission) matrix is kept as
-    #  its own component, and its linear predictors / parameters are
-    #  recorded so that coef(), vcov(), print() and summary() can leave
-    #  them out of the transition coefficients.
-    if (!is.null(rlist)) {
-        mc <- build_misclass(rlist, names(ymarker),
-                             coef.to.B(param, cmap, fixed=TRUE), cmap, nlp,
-                             vcov, statenames)
-        if (length(mc$misclass)) {
-            final$misclass <- mc$misclass
-        }
-        # continuous markers (gaussian, logistic, beta): their parameters
-        #  are kept in fit$markers in the same way
-        mk <- build_markers(rlist, names(ymarker),
-                            coef.to.B(param, cmap, fixed=TRUE), cmap, nlp,
-                            vcov, statenames)
-        if (length(mk$markers)) final$markers <- mk$markers
-        ecols <- sort(unique(c(mc$ecols, mk$ecols)))
-        if (length(ecols)) {
-            final$ecols <- ecols        # marker columns of cmap
-            final$epar  <- sort(unique(c(mc$epar, mk$epar))) # in coefficients
-        }
+    if (nmarker > 0) {
+        marker_names <- unique(marker1$marker)
+        marker_info <- lapply(seq_along(rlist), function(i)
+            marker.output(rlist[[i]], marker_names[i], B, cmap, nlp,
+                          param, vcov))
+        names(marker_info) <- marker_names
+        final$markers <- marker_info[vapply(marker_info, function(x)
+            x$family != "discrete", logical(1))]
+        final$misclass <- marker_info[vapply(marker_info, function(x)
+            x$family == "discrete", logical(1))]
+        final$marker.ids <- sort(unique(unlist(lapply(marker_info,
+            `[[`, "coefficient_ids"))))
+        final$ecols <- nlp[1] + seq_len(nlp[2])
+        final$epar <- final$marker.ids
     }
 
     if (!is.null(removed)) final$removed <- removed

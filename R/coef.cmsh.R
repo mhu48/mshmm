@@ -1,30 +1,70 @@
 # The coefficients/coef and print methods
 
-coef.cmsh <- function(object, matrix=FALSE, 
+coef.cmsh <- function(object, matrix=FALSE, markers=TRUE,
                      fixed=TRUE, matrix1= matrix, matrix2= matrix, 
-                     matrix3= matrix, markers=FALSE, ...) {
-    # markers=FALSE (default): the parameters of the markers are not part of
-    #  the result; they live in object$misclass (discrete markers) and
-    #  object$markers (gaussian, logistic, beta, gamma), on the scale set by
-    #  each distribution's format() function in response.R.
-    #  markers=TRUE returns every parameter, on the linear predictor scale.
+                     matrix3= matrix, ...) {
     cmap <- object$cmap
-    ecols <- if (markers) NULL else object$ecols
-    epar  <- if (markers) NULL else object$epar
     if (missing(matrix)) matrix <- (matrix1 | matrix2 | matrix3)
     if (matrix) {
         B <- coef.to.B(object$coefficients, cmap, fixed=fixed)
         dimnames(B) <- dimnames(cmap)
         keep <- rep(c(matrix1, matrix2, matrix3), object$nlp)
-        if (length(ecols)) keep[ecols] <- FALSE
+        if (!markers && object$nlp[2] > 0L)
+            keep[object$nlp[1] + seq_len(object$nlp[2])] <- FALSE
         B[,keep, drop=FALSE]
     }
     else {
-        cf <- object$coefficients
-        if (fixed) use <- seq_along(cf)
-        else use <- sort(unique(cmap[cmap>0]))
-        cf[setdiff(use, epar)]
+        ids <- if (fixed) seq_along(object$coefficients)
+               else sort(unique(cmap[cmap>0]))
+        if (!markers && length(object$marker.ids))
+            ids <- setdiff(ids, object$marker.ids)
+        object$coefficients[ids]
     }
+}
+
+summary.cmsh <- function(object, conf.int=0.95, markers=TRUE, ...) {
+    estimate <- object$coefficients
+    se <- if (is.null(object$var)) rep(NA_real_, length(estimate))
+          else sqrt(pmax(diag(object$var), 0))
+    fixed_ids <- unique(abs(object$cmap[object$cmap < 0L]))
+    if (length(fixed_ids)) se[fixed_ids] <- NA_real_
+    zcrit <- qnorm(1 - (1 - conf.int) / 2)
+    table <- cbind(
+        estimate=estimate,
+        `exp(estimate)`=exp(estimate),
+        std.error=se,
+        lower=estimate - zcrit * se,
+        upper=estimate + zcrit * se,
+        z=estimate / se,
+        p=2 * pnorm(-abs(estimate / se))
+    )
+    if (length(object$marker.ids))
+        table <- table[-object$marker.ids, , drop=FALSE]
+    value <- list(call=object$call, coefficients=table,
+                  loglik=object$loglik, n=object$n,
+                  markers=if (markers) object$markers else NULL,
+                  misclass=if (markers) object$misclass else NULL,
+                  AIC=-2 * object$loglik[length(object$loglik)] +
+                      2 * length(coef(object, fixed=FALSE, markers=TRUE)),
+                  converged=object$fit$converged,
+                  conf.int=conf.int)
+    class(value) <- "summary.cmsh"
+    value
+}
+
+print.summary.cmsh <- function(x, digits=max(1L, getOption("digits") - 3L), ...) {
+    if (!is.null(x$call)) {
+        cat("Call:\n")
+        dput(x$call)
+        cat("\n")
+    }
+    printCoefmat(x$coefficients, digits=digits, P.values=TRUE,
+                 has.Pvalue=TRUE, ...)
+    if (length(x$markers)) print_markers(x$markers, digits=digits, ci=TRUE)
+    if (length(x$misclass)) print_misclass(x$misclass, digits=digits, ci=TRUE)
+    cat("AIC: ", format(unname(x$AIC)), "\n", sep="")
+    if (!is.null(x$converged)) cat("Converged: ", x$converged, "\n", sep="")
+    invisible(x)
 }
 
 # functions to go from B to coef, and coef to B
@@ -67,42 +107,53 @@ print.cmsh <- function(x, digits=max(1L, getOption("digits")- 3L),
 	cat("\n")
 	}
    
-     coef <- x$coefficients
-     se <- sqrt(diag(x$var))
-     tmp <- cbind(coef, exp(coef), se, coef/se,
-                  pchisq((coef/se)^2, 1, lower.tail=FALSE))
-     dimnames(tmp) <- list(names(coef), c("coef", "exp(coef)",
-                                          "se(coef)", "z", "p"))
-     # print it group by group
-     # lazy: I don't want to type x$cmap many times
-     #  remove transitions with no covariates
-     cmap <- x$cmap
-     if (length(x$ecols)) cmap <- cmap[, -x$ecols, drop=FALSE]  # not the marker lp
-     cmap <- cmap[, colSums(cmap) > 0, drop=FALSE]
-     cname <- colnames(cmap)
-     printed <- rep(FALSE, length(cname))
-     rname <- rownames(cmap)
      extrarows <- NULL
-     for (i in 1:length(cname)) {
-         # if multiple colums of tmat are identical, only print that
-         #  set of coefficients once
-         if (!printed[i]) {
-             j <- apply(cmap, 2, function(x) all(x == cmap[,i])) 
-             printed[j] <- TRUE
-             tlab <- c(paste(cname[j], collapse=", "), "") #label for block
-             if (nchar(tlab[1]) > 20) {     
-                 k <- length(extrarows) +1L
-                 extrarows <- c(extrarows, 
-                                paste(LETTERS[k], tlab[1], sep=": "))
-                 tlab <- c(LETTERS[k], "") # new block label
+     if (is.null(x$var)) {
+         # when iter=0 is used derivatives and variance are not computed
+         print(coef(x, matrix=TRUE, markers=FALSE), digits=digits)
+         cat('\n')
+     }
+     else {
+         coef <- x$coefficients
+         se <- sqrt(diag(x$var))
+         fixed_ids <- unique(abs(x$cmap[x$cmap < 0L]))
+         if (length(fixed_ids)) se[fixed_ids] <- NA_real_
+         tmp <- cbind(coef, exp(coef), se, coef/se,
+                      pchisq((coef/se)^2, 1, lower.tail=FALSE))
+         dimnames(tmp) <- list(names(coef), c("coef", "exp(coef)",
+                                              "se(coef)", "z", "p"))
+         # print it group by group
+         # lazy: I don't want to type x$cmap many times
+         #  remove transitions with no covariates
+         cmap <- x$cmap
+         if (length(x$ecols)) cmap <- cmap[, -x$ecols, drop=FALSE]
+         cmap <- cmap[, colSums(cmap != 0) > 0, drop=FALSE]
+         cname <- colnames(cmap)
+         printed <- rep(FALSE, length(cname))
+         rname <- rownames(cmap)
+         for (i in 1:length(cname)) {
+             # if multiple colums of tmat are identical, only print that
+             #  set of coefficients once
+             if (!printed[i]) {
+                 j <- apply(cmap, 2, function(x) all(x == cmap[,i])) 
+                 printed[j] <- TRUE
+                 tlab <- c(paste(cname[j], collapse=", "), "") #label for block
+                 if (nchar(tlab[1]) > 20) {     
+                     k <- length(extrarows) +1L
+                     extrarows <- c(extrarows, 
+                                    paste(LETTERS[k], tlab, sep=': '))
+                     tlab <- c(LETTERS[k], "") # new block label
+                 }
+                 ids <- abs(cmap[, i])
+                 use <- which(ids > 0L)
+                 tmp2 <- tmp[ids[use],, drop=FALSE]
+                 names(dimnames(tmp2)) <- tlab
+                 # restore character row names
+                 rownames(tmp2) <- rname[use]
+                 printCoefmat(tmp2, digits=digits, P.values=TRUE, 
+                              has.Pvalue=TRUE, signif.stars=signif.stars, ...)
+                 cat("\n")   
              }
-             tmp2 <- tmp[cmap[,i],, drop=FALSE]
-             names(dimnames(tmp2)) <- tlab
-             # restore character row names
-             rownames(tmp2) <- rname[cmap[,i]>0]
-             printCoefmat(tmp2, digits=digits, P.values=TRUE, 
-                          has.Pvalue=TRUE, signif.stars=signif.stars, ...)
-             cat("\n")   
          }
      }
 
@@ -110,9 +161,8 @@ print.cmsh <- function(x, digits=max(1L, getOption("digits")- 3L),
                                   sep='= '), collapse=", "), '\n')
      if (!is.null(extrarows)) cat(extrarows, sep='\n')
      cat("\n")
-     # marker results, each on the scale given by its distribution's format()
-     if (!is.null(x$misclass)) print_misclass(x$misclass, digits=digits)
-     if (!is.null(x$markers)) print_markers(x$markers, digits=digits)
+     if (length(x$markers)) print_markers(x$markers, digits=digits)
+     if (length(x$misclass)) print_misclass(x$misclass, digits=digits)
      loglik <- round(x$loglik, 2)
      if (length(loglik)==1)
          cat("Log-likelihood: ", format(x$loglik[1]), "\n")

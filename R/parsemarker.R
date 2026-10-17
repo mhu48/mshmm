@@ -49,16 +49,16 @@ parsemarker1 <- function(flist, statedata) {
     # Further covariates and intercepts.  We will later need to distinguish
     #  between ~ x and ~ 1+x, so pass the equation forward, make it
     #  a 1 sided formula
-    mterm <- lapply(rhs2, function(x) {
-        dummy <- flist[[1]][1:2]  # keep the proper environment
+    mterm <- Map(function(form, x) {
+        dummy <- form[1:2]  # keep this formula's environment
         dummy[[2]] <- x[[1]]
         dummy
-    })      
+    }, flist, rhs2)
     
     # the parent needs the markers and the extra variables (mterm) to
     #  build the data frame, stateinfo is passed to parsemarker2
     list(marker=marker, mterm=mterm, options=options, nmarker=nmarker,
-         stateinfo= stateinfo)
+         stateinfo=stateinfo, fenv=lapply(flist, environment))
 }
 
 # expand the set of state:marker implied by a left hand side.
@@ -227,17 +227,21 @@ parsemarker2 <- function(parse1, statedata, Terms, Xname, Xassign,
     #  function of the distribution used for each.  
     # E.g. gaussian() is the setup function a gaussian peak, and it will
     #  return a response function along with ancillary information.
+    zeroform <- vapply(parse1$mterm, function(x)
+        length(x) == 2L && is.numeric(x[[2]]) && identical(x[[2]], 0),
+        logical(1))
     mindex <- match(marker, umarker)  # markerlevel will be in umarker order
     rlist <- lapply(seq(along=mindex), function(i) {
-        arglist <- list(stateinfo= parse1$stateinfo[[i]],
-                        mlevel =   markerlevel[[oindex[i]]])
-        arglist$static <- (parse1$mterm[[oindex[i]]] == ~0) 
+        arglist <- list(stateinfo=parse1$stateinfo[[i]],
+                        mlevel=markerlevel[[mindex[i]]])
+        arglist$static <- zeroform[oindex[i]]
         tdist <- odist[[oindex[i]]] #options for this marker
         if (!is.null(tdist$call)) {
             # add on user arguments
             temp <- tdist$call
             temp[[1]] <- as.name("list")
-            arglist <- c(arglist, eval(temp))
+            arglist <- c(arglist,
+                         eval(temp, envir=parse1$fenv[[oindex[i]]]))
         }
         do.call(tdist$dist, arglist)
     })    
@@ -248,7 +252,6 @@ parsemarker2 <- function(parse1, statedata, Terms, Xname, Xassign,
     #  for this use we only want one of them
     # Exception: a marker with ~0 as a formula has no linear predictor
     # it gets created in cmap below, then taken away
-    zeroform <- sapply(parse1$mterm, function(x) x == ~0)
     tlabel <- lapply(match(umarker, marker), function(i) {
         if (is.null(rlist[[i]]$pname)) NULL
         else {
@@ -271,9 +274,12 @@ parsemarker2 <- function(parse1, statedata, Terms, Xname, Xassign,
 
     cmap <- matrix(0L, nrow=length(Xname), ncol= numlp,
                    dimnames=list(Xname, lpname))
-    if (numlp==0) { # there are no parameters, e.g. a fixed missclass matrix
-        return(list(cmap=cmap, response = rlist[match(umarker, marker)],
-                    e2map = eindex, init = NULL))
+    if (numlp==0) { # there are no parameters, e.g. a fixed marker model
+        response <- rlist[match(umarker, marker)]
+        for (i in seq_along(response)) response[[i]]$e2map <- eindex[[i]]
+        names(response) <- umarker
+        return(list(cmap=cmap, response=response, e2map=eindex,
+                    rindex=eindex))
     }
                     
 
@@ -291,9 +297,11 @@ parsemarker2 <- function(parse1, statedata, Terms, Xname, Xassign,
         if (hascommon(parse1$options[[i]])) dtemp <- dtemp[,1, drop=FALSE]
 
         # which rows of cmap?
-        if (zeroform[i] ||parse1$mterm[[i]] == ~1) irow <- 1 # intercept or NULL
-        else { # more complex formula
-            temp <- attr(terms(parse1$mterm[[i]]), "term.labels")
+        temp <- attr(terms(parse1$mterm[[i]]), "term.labels")
+        if (zeroform[i] ||
+            (hasintercept(parse1$mterm[[i]]) && !length(temp))) {
+            irow <- 1 # intercept or NULL
+        } else { # more complex formula
             iterm <- match(temp, attr(Terms, "term.labels"))
             irow  <- which(Xassign %in% iterm)
             if (hasintercept(parse1$mterm[[i]])) irow <- c(1, irow)
@@ -301,20 +309,12 @@ parsemarker2 <- function(parse1, statedata, Terms, Xname, Xassign,
         cmap[irow, k] <- dtemp[irow,]
     }
         
-    # Static (~0) markers have no linear predictors, so there is nothing
-    #  to remove from cmap.  Map the elements of cmap to 0, 1, ...
+    # map the elements of cmap to 0, 1, ...
     cmap[,] <- match(cmap, unique(c(0L, cmap))) - 1L
-
-    # starting values for the intercepts of each linear predictor, if the
-    #  distribution supplied them (e.g. discrete(init= ))
-    initval <- rep(NA_real_, numlp)
-    for (i in seq_along(umarker)) {
-        r <- rlist[[match(umarker[i], marker)]]
-        if (!is.null(r$init) && length(eindex[[i]]) == length(r$init))
-            initval[eindex[[i]]] <- r$init
-    }
-    list(cmap=cmap, response = rlist[match(umarker, marker)],
-         e2map = eindex, rindex = eindex, init = initval)
+    response <- rlist[match(umarker, marker)]
+    for (i in seq_along(response)) response[[i]]$e2map <- eindex[[i]]
+    names(response) <- umarker
+    list(cmap=cmap, response=response, e2map=eindex, rindex=eindex)
 }
                                                            
 # Run down the formula parse tree and see if there is an explicit
