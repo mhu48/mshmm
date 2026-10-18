@@ -53,7 +53,9 @@ snapshot and is not claimed as September code.
 The filesystem timestamps below come from the preserved local working tree.
 Git does not preserve file-creation timestamps, so the SHA-256 values provide
 stable identifiers while the timestamps and contemporaneous analysis outputs
-provide supporting provenance.
+provide supporting provenance.  The table describes the preserved snapshot
+committed as `873fc1b`; later review commits intentionally modify `R/hmmscore.R`
+and add tests without changing that archived commit.
 
 | File | Preserved modification time (CDT) | SHA-256 |
 |---|---|---|
