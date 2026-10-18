@@ -43,6 +43,11 @@ working tree.  The additional focused regression files were added when the
 snapshot was committed to Git so that reviewers can directly reproduce the
 September failure modes and repairs.
 
+The later commit titled `Preserve single-row constraint dimensions` is an
+October review fix discovered by applying the new focused test to the archived
+constraint path.  It is intentionally separate from the preserved September
+snapshot and is not claimed as September code.
+
 ## Preserved-file evidence
 
 The filesystem timestamps below come from the preserved local working tree.

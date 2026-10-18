@@ -67,9 +67,10 @@ hmmscore <- function(par, fn, gr, iter=30,
         dmat <- diag((dS + max(dS)/1e3)*lm) # the smallest 
 
         if (ncon>0) {
-            Ebeta <- as.vector(constraint[,-1] %*% par)
+            amat <- constraint[, -1, drop=FALSE]
+            Ebeta <- as.vector(amat %*% par)
             boundary <- shrink*halving*(Ebeta + constraint[,1])
-            temp <- solve.QP(S+dmat, -fit$deriv, -t(constraint[,-1]),
+            temp <- solve.QP(S+dmat, -fit$deriv, -t(amat),
                              -boundary)
             newpar <- par- temp$solution*shrink*halving
             active <- sort(temp$iact)
