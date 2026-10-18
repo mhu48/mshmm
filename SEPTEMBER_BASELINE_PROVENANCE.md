@@ -27,6 +27,22 @@ The September validation was limited to the Gaussian continuous-marker path
 used by the one-process and multiprocess analyses.  This baseline does not
 claim the later comprehensive marker-family work from pull request #2.
 
+## Claim-to-code map
+
+| Independently developed function | Package implementation | Regression evidence |
+|---|---|---|
+| Repeated-state Gaussian gradient and indexing | `R/response.R`, `R/hmm1.R` | `tests/gaussian-marker-gradient.R` |
+| Caller-scope marker options | `R/parsemarker.R` | `tests/marker-option-environment.R` |
+| Affine constraints and optimizer forwarding | `R/hmmconstraint.R`, `R/cmsh.R`, `R/msh.fit.R`, `R/hmmscore.R` | `tests/constraint.R` |
+| Optimized coefficients returned without scaling | `R/cmsh.R` | `tests/unscaled-coefficient-output.R` |
+| Known-state, exact-death, and alive-censor derivative conditioning | `R/hmm1.R` | `tests/gaussian-marker-gradient.R`, `tests/marker-observation-conditioning.R` |
+| Sequential likelihood uses current parameters | `R/hmmloglik.R` | exercised by the model-fitting tests |
+
+The first two regression files in this table were preserved with the September
+working tree.  The additional focused regression files were added when the
+snapshot was committed to Git so that reviewers can directly reproduce the
+September failure modes and repairs.
+
 ## Preserved-file evidence
 
 The filesystem timestamps below come from the preserved local working tree.
