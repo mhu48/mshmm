@@ -147,7 +147,7 @@ hmm2 <- function(who,  B) {
     rfun <- rgrad <- vector("list", nmarker)  # results from calling rfun()s
     # rfun will be a matrix with nstate rows and nk col, nk = number of
     #  rows which have marker k not missing
-    # rgrad is array of (nstate, length(e2map), nk)= (state, lp, row)
+    # rgrad is array of (nstate, nk, length(e2map)) = (state, row, lp)
     rneed <- (otype[rows]==3)  # observed markers
     # rlist was created in cmsh from marker2$response
     if (any(rneed)) {
@@ -179,6 +179,8 @@ hmm2 <- function(who,  B) {
             k <- ystate[j]
             alpha[-k] <- 0
             P.d[, -k] <- 0
+            if (nlp[2]) R.d[-k,] <- 0
+            if (nlp[3]) pi.d[-k,] <- 0
         }
         else if (otype[j] == 2) {
             # exact event time (death)
@@ -186,8 +188,16 @@ hmm2 <- function(who,  B) {
             klp <- (qmatrix[,k])  #linear preds for transitions to state k
             dtemp <- rmat[,k]  #rate at this point
             dtemp[k] <- 0      # we don't want -1*rowsum (r[k,k]) here
-            if (nlp[3]) pi.d <- pi.d * rep(dtemp, nlp[3])
-            if (nlp[2]) R.d  <- R.d  * rep(dtemp, nlp[2])
+            if (nlp[3]) {
+                temp_deriv <- colSums(pi.d * rep(dtemp, nparm[3]))
+                pi.d[,] <- 0
+                pi.d[k,] <- temp_deriv
+            }
+            if (nlp[2]) {
+                temp_deriv <- colSums(R.d * rep(dtemp, nparm[2]))
+                R.d[,] <- 0
+                R.d[k,] <- temp_deriv
+            }
             if (control$debug >1) {cat("death "); browser()}
             # Why the j-1 below?  A death density will depend on covariates
             #  measured prior to the death, not measured at the death
@@ -217,14 +227,17 @@ hmm2 <- function(who,  B) {
                     nc[k] <- nc[k] +1
                     temp <- rfun[[k]][,nc[k]]
                     if (nlp[3]) pi.d <- pi.d * temp 
-                    if (nlp[1]) P.d  <- P.d * rep(temp, each=nlp[1])
+                    if (nlp[1]) P.d  <- P.d * rep(temp, each=nparm[1])
                     if (nlp[2]) R.d  <- R.d * temp
                     if (!is.null(rgrad[[k]])) { #if there are derivatives
-                        j <- rlist$e2map[[k]] # which linear predictors
-                        # eta.b3(X[j,]) is d\eta/d\beta for all response lp
-                        # rgrad[[k]] will nstate rows, length(j) cols
-                        temp <- alpha %*% rgrad[[k]][,,nc[k]]
-                        R.d <- R.d + temp %*% eta.b3(X[j,])[,rlist$e2map[[k]]]
+                        e2map <- rlist[[k]]$e2map # marker-relative LP indices
+                        # rgrad is state by observation by marker LP. Convert
+                        # from marker LP derivatives to marker coefficients.
+                        gtemp <- rgrad[[k]][,nc[k],, drop=FALSE]
+                        gtemp <- matrix(gtemp, nrow=nstate,
+                                        ncol=length(e2map))
+                        ztemp <- eta.beta2(X[j,])[e2map,,drop=FALSE]
+                        R.d <- R.d + (alpha * gtemp) %*% ztemp
                     } 
                     if (control$debug>3) browser()
                     alpha <- alpha * temp
@@ -246,6 +259,8 @@ hmm2 <- function(who,  B) {
             if (length(exactabsorb)) {
                 alpha[exactabsorb] <- 0
                 P.d[,exactabsorb] <- 0
+                if (nlp[2]) R.d[exactabsorb,] <- 0
+                if (nlp[3]) pi.d[exactabsorb,] <- 0
             }
         }
 

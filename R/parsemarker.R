@@ -57,8 +57,13 @@ parsemarker1 <- function(flist, statedata) {
     
     # the parent needs the markers and the extra variables (mterm) to
     #  build the data frame, stateinfo is passed to parsemarker2
+    # Distribution options can contain user objects, for example
+    # discrete(init = offdens).  Preserve each formula's environment so
+    # parsemarker2 evaluates those objects where the marker formula was made
+    # rather than inside the package namespace.
+    fenv <- lapply(flist, environment)
     list(marker=marker, mterm=mterm, options=options, nmarker=nmarker,
-         stateinfo= stateinfo)
+         stateinfo=stateinfo, fenv=fenv)
 }
 
 # expand the set of state:marker implied by a left hand side.
@@ -230,14 +235,14 @@ parsemarker2 <- function(parse1, statedata, Terms, Xname, Xassign,
     mindex <- match(marker, umarker)  # markerlevel will be in umarker order
     rlist <- lapply(seq(along=mindex), function(i) {
         arglist <- list(stateinfo= parse1$stateinfo[[i]],
-                        mlevel =   markerlevel[[oindex[i]]])
+                        mlevel =   markerlevel[[mindex[i]]])
         arglist$static <- (parse1$mterm[[oindex[i]]] == ~0) 
         tdist <- odist[[oindex[i]]] #options for this marker
         if (!is.null(tdist$call)) {
             # add on user arguments
             temp <- tdist$call
             temp[[1]] <- as.name("list")
-            arglist <- c(arglist, eval(temp))
+            arglist <- c(arglist, eval(temp, envir=parse1$fenv[[oindex[i]]]))
         }
         do.call(tdist$dist, arglist)
     })    
@@ -272,8 +277,10 @@ parsemarker2 <- function(parse1, statedata, Terms, Xname, Xassign,
     cmap <- matrix(0L, nrow=length(Xname), ncol= numlp,
                    dimnames=list(Xname, lpname))
     if (numlp==0) { # there are no parameters, e.g. a fixed missclass matrix
-        return(list(cmap=cmap, response = rlist[match(umarker, marker)],
-                    e2map = eindex))
+        response <- rlist[match(umarker, marker)]
+        for (i in seq_along(response)) response[[i]]$e2map <- eindex[[i]]
+        return(list(cmap=cmap, response=response, e2map=eindex,
+                    rindex=eindex))
     }
                     
 
@@ -301,13 +308,11 @@ parsemarker2 <- function(parse1, statedata, Terms, Xname, Xassign,
         cmap[irow, k] <- dtemp[irow,]
     }
         
-    # ditch the zero
-    cmap <- cmap[,!zeroform]
-    response <- (rlist[match(umarker, marker)])[!zeroform]
     # map the elements of cmap to 0, 1, ...
     cmap[,] <- match(cmap, unique(c(0L, cmap))) - 1L
-    list(cmap=cmap, response = rlist[match(umarker, marker)],
-         rindex= eindex)
+    response <- rlist[match(umarker, marker)]
+    for (i in seq_along(response)) response[[i]]$e2map <- eindex[[i]]
+    list(cmap=cmap, response=response, e2map=eindex, rindex=eindex)
 }
                                                            
 # Run down the formula parse tree and see if there is an explicit

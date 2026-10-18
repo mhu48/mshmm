@@ -30,7 +30,7 @@ hmmloglik <- function(param, logfun) {
         else mcfit <- mclapply(unique(id), logfun, B= B2,
                                mc.cores= mc.cores, mc.set.seed=FALSE)
     }
-    else mcfit <- lapply(unique(id), logfun, B=B)
+    else mcfit <- lapply(unique(id), logfun, B=B2)
     
     if (any(sapply(mcfit, is.character))) {
         # failure

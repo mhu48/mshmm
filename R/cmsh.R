@@ -405,13 +405,13 @@ cmsh <- function(formula, data, subset, weights,
 
     # preprocess constraint and penalty
     if (!missing(constraint)) {
-        constraint <- hmmconstraint(constraint, Terms, cmap)
-        constraint <- constraint %*% xtrans # users write for untransformed X
+        constraint <- hmmconstraint(constraint, Terms, cmap, xtrans, B)
     } else constraint <- NULL
     if (!missing(penalty)) {
-        penalty <- hmmconstraint(penalty, Terms)
-        penalty <- penalty %*% xtrans # the are written for untransformed X
-        penmat <- crossprod(penalty)
+        penalty <- hmmconstraint(penalty, Terms, cmap, xtrans, B)
+        if (any(penalty[,1] != 0))
+            stop("penalties involving fixed coefficients are not supported")
+        penmat <- crossprod(penalty[,-1,drop=FALSE])
     } else penmat <- NULL
     
     # initial probabilities for each subject
@@ -480,17 +480,17 @@ cmsh <- function(formula, data, subset, weights,
         ymarker <- mf[unique(marker1$marker)]  # a data frame
         nmarker <- ncol(ymarker)
         rlist <- marker2$response
-        if (b2>0) eta <- X%*% B[,b2]
+        if (length(b2)>0) eta <- X %*% B
         for (i in 1:nmarker) {
             # check for a valid response vector
             if (!is.null(rlist[[i]]$checkfun)) rlist[[i]]$checkfun(ymarker[,i])
             tfun <- rlist[[i]]$rfun
             keep <- !is.na(ymarker[,i])
-            if (length(rlist$e2map[[i]]) >0 ) {
+            if (length(rlist[[i]]$e2map) >0 ) {
                 # the e2map indices from parsemarker are within the cmap cols
                 #  for markers, hmm1 and hmm2 will want overall cmap index
-                j <- rlist$e2map[[i]] + nlp[1]
-                test <- tfun(ymarker[keep,i], eta[keep, j])
+                j <- rlist[[i]]$e2map + nlp[1]
+                test <- tfun(ymarker[keep,i], eta[keep, j, drop=FALSE])
                 }
             else test <- tfun(ymarker[keep,i]) #e.g. a fixed missclass matrix
             if (nrow(test) != nstate || ncol(test) != sum(keep)) 
@@ -511,15 +511,16 @@ cmsh <- function(formula, data, subset, weights,
     }
     else if (mfunname == "hmmscore") 
         mfattr<- list(param= "par", fn="fn", deriv=TRUE, gfun=NULL, 
-                     iter= "iter", result=2)
+                     iter= "iter", result=2, constraint="constraint")
     else if (mfunname== "optim")
         mfattr <- list(param="par", fn="fn", deriv= TRUE, gfun="gr", 
                      iter= list(control="maxit"), result=3)
     else if (mfunname== "hmm1" || mfunname== "hmm2") 
-        mfattr <- list(param="par", fun="fn", deriv=FALSE, 
+        mfattr <- list(param="par", fn="fn", deriv=FALSE,
                        iter= "iter", result=4)
     else if (!missing(mfattr)) {
-        mfname <- c("param", "fun", "deriv", "iter", "result")
+        if (is.null(mfattr$fn) && !is.null(mfattr$fun)) mfattr$fn <- mfattr$fun
+        mfname <- c("param", "fn", "deriv", "iter", "result")
         if (any(is.na(match(mfname, names(mfattr)))))
             stop("the mfattr argument is not complete")
     } else stop("user supplied optimizer must include mfattr argument")
@@ -543,14 +544,14 @@ cmsh <- function(formula, data, subset, weights,
         vcov <- gsolve(temp$S)
     } else vcov <- NULL
 
-    # Undo any scaling and centering
+    # Update from the optimizer and undo any scaling and centering
+    B <- coef.to.B(mfit$param, cmap, B)
     if (control$scale || control$center) {
-        B <- coef.to.B(mfit$param, cmap, B)
-        Bscale <- xtrans %*% B
-        param <- B.to.coef(Bscale, cmap, fixed=TRUE)
+        B <- xtrans %*% B
         #browser()
         #if (vcov) stop("need to fill in")
     }
+    param <- B.to.coef(B, cmap, fixed=TRUE)
 
     # Add names
     pname <- outer(rownames(cmap), colnames(cmap), paste, sep='_')

@@ -34,8 +34,8 @@ hmm.dist <- c("gaussian", "logistic", "beta", "discrete")
 #  complete wrt a valid y.   For instance state:zed/gaussian where zed was
 #  a list will be caught in the later check.
 #  
-gaussian <- function(stateinfo, levels, param, ...) {
-    if (length(levels) >0) 
+gaussian <- function(stateinfo, mlevel, param, ...) {
+    if (length(mlevel) >0)
         stop("a factor variable cannot be a guassian marker")
     npeak <- length(stateinfo$levels)
     pname <- makedistlabels(stateinfo, c("mean", "std"))
@@ -64,11 +64,13 @@ gaussian <- function(stateinfo, levels, param, ...) {
         for (i in 1:npeak) {
             j <- i*2L - 1L  # npeak (mean, log(std)) pairs
             std <- exp(eta[,j+1])
-            yprob[map==i,] <- rep(dnorm(y, eta[,i], std, log=TRUE),
+            yprob[map==i,] <- rep(dnorm(y, eta[,j], std, log=TRUE),
                                       each= mcount[i])
             if (gradient) { #(gradient is easier on log scale)
-                gradient[map==i,,j] = (y- eta[,j])/std^2
-                gradient[map==i,,j+1] <- (((y-eta[,j])/std)^2 -1)
+                ygrad[map==i,,j] <- rep((y- eta[,j])/std^2,
+                                         each=mcount[i])
+                ygrad[map==i,,j+1] <- rep((((y-eta[,j])/std)^2 -1),
+                                           each=mcount[i])
             }
         }
     
@@ -104,7 +106,7 @@ makedistlabels <- function(stateinfo, parms) {
 }
 
 # logistic, a bit fatter tails
-logistic <- function(stateinfo, levels, param, ...) {
+logistic <- function(stateinfo, mlevel, param, ...) {
     npeak <- length(stateinfo$levels)
     pname <- makedistlabels(stateinfo, c("mean", "std"))
     if (missing(param)) subset= 1:ncol(pname)
@@ -131,14 +133,14 @@ logistic <- function(stateinfo, levels, param, ...) {
    
         for (i in 1:npeak) {
             j <- i*2L - 1L  # npeak (mean, log(std)) pairs
-            scale <- exp(eta[,j])* sqrt(3)/pi # R logis has "scale" not "std"
+            scale <- exp(eta[,j+1])* sqrt(3)/pi # R logis has "scale" not "std"
             yprob[map==i,] <- rep(dlogis(y, eta[,j], scale, log=TRUE),
                                   each= mcount[i])
             if (gradient) {
                 temp1 <- (y- eta[,j])/scale
                 temp2 <- exp(temp1)/(1+ exp(temp1))
-                gradient[map==i,,j] = -temp1*(1 + temp2)
-                gradient[map==i,,j+1] = -(1+ temp1*(1+temp2))
+                ygrad[map==i,,j] <- -temp1*(1 + temp2)
+                ygrad[map==i,,j+1] <- -(1+ temp1*(1+temp2))
             }
             # convert from log to density
             yprob[map>0,] <- exp(yprob[map>0,])
